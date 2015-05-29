@@ -39,7 +39,7 @@
  * This is the only parameter you may want to change.
  */
 #ifndef GF_BITS
-#define GF_BITS  8	/* code over GF(2**GF_BITS) - change to suit */
+#define GF_BITS  16	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
 #include <stdio.h>
@@ -210,9 +210,9 @@ init_mul_table()
 }
 #else	/* GF_BITS > 8 */
 static inline gf
-gf_mul(x,y)
+gf_mul(gf x, gf y)
 {
-    if ( (x) == 0 || (y)==0 ) return 0;
+    if (x == 0 || y == 0) return 0;
      
     return gf_exp[gf_log[x] + gf_log[y] ] ;
 }
@@ -336,10 +336,11 @@ generate_gf(void)
 
 #define UNROLL 16 /* 1, 4, 8, 16 */
 static void
-addmul1(gf *dst1, gf *src1, gf c, int sz)
+addmul1(gf *dst1, const gf *src1, gf c, int sz)
 {
     USE_GF_MULC ;
-    register gf *dst = dst1, *src = src1 ;
+    register gf *dst = dst1;
+    register const gf *src = src1 ;
     gf *lim = &dst[sz - UNROLL + 1] ;
 
     GF_MULC0(c) ;
@@ -722,7 +723,7 @@ fec_new(int k, int n)
  * with index "index".
  */
 void
-fec_encode(struct fec_parms *code, gf *src[], gf *fec, int index, int sz)
+fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
 {
     int i, k = code->k ;
     gf *p ;

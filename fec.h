@@ -31,6 +31,8 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
  * OF SUCH DAMAGE.
  */
+#ifndef _FEC_H
+#define _FEC_H
 
 /*
  * The following parameter defines how many bits are used for
@@ -39,15 +41,16 @@
  * This is the only parameter you may want to change.
  */
 #ifndef GF_BITS
-#define GF_BITS  8	/* code over GF(2**GF_BITS) - change to suit */
+#define GF_BITS  16	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
 #define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
-void fec_free(void *p) ;
-void * fec_new(int k, int n) ;
 
-void init_fec() ;
-void fec_encode(void *code, void *src[], void *dst, int index, int sz) ;
-int fec_decode(void *code, void *pkt[], int index[], int sz) ;
+extern void fec_free(void *p);
+extern void * fec_new(int k, int n);
 
-/* end of file */
+extern void init_fec();
+extern void fec_encode(void *code, const void *src[], void *dst, int index, int sz);
+extern int fec_decode(void *code, void *pkt[], int index[], int sz);
+
+#endif /* _FEC_H */
