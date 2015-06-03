@@ -45,6 +45,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <immintrin.h>
 
 /*
  * compatibility stuff
@@ -158,10 +160,14 @@ static const char *allPp[] = {    /* GF_BITS	polynomial		*/
  */
 
 static gf gf_exp[2*GF_SIZE];	/* index->poly form conversion table	*/
-static int gf_log[GF_SIZE + 1];	/* Poly->index form conversion table	*/
+static int gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
 static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
+#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+#define SIMD_SIZE 16
+static __m128i fast_gf_exp[GF_SIZE + 1][8];
+#endif
 /*
  * modnn(x) computes x % GF_SIZE, where GF_SIZE is 2**GF_BITS - 1,
  * without a slow divide.
@@ -170,8 +176,8 @@ static inline gf
 modnn(int x)
 {
     while (x >= GF_SIZE) {
-	x -= GF_SIZE;
-	x = (x >> GF_BITS) + (x & GF_SIZE);
+        x -= GF_SIZE;
+        x = (x >> GF_BITS) + (x & GF_SIZE);
     }
     return x;
 }
@@ -202,18 +208,18 @@ init_mul_table()
 {
     int i, j;
     for (i=0; i< GF_SIZE+1; i++)
-	for (j=0; j< GF_SIZE+1; j++)
-	    gf_mul_table[i][j] = gf_exp[modnn(gf_log[i] + gf_log[j]) ] ;
+        for (j=0; j< GF_SIZE+1; j++)
+            gf_mul_table[i][j] = gf_exp[modnn(gf_log[i] + gf_log[j]) ] ;
 
     for (j=0; j< GF_SIZE+1; j++)
-	    gf_mul_table[0][j] = gf_mul_table[j][0] = 0;
+            gf_mul_table[0][j] = gf_mul_table[j][0] = 0;
 }
 #else	/* GF_BITS > 8 */
 static inline gf
 gf_mul(gf x, gf y)
 {
     if (x == 0 || y == 0) return 0;
-     
+    
     return gf_exp[gf_log[x] + gf_log[y] ] ;
 }
 #define init_mul_table()
@@ -239,18 +245,37 @@ gf_mul(gf x, gf y)
  * one place.
  */
 static void *
-my_malloc(int sz, char *err_string)
+my_malloc(size_t sz, const char *err_string)
 {
     void *p = malloc( sz );
     if (p == NULL) {
-	fprintf(stderr, "-- malloc failure allocating %s\n", err_string);
-	exit(1) ;
+        fprintf(stderr, "-- malloc failure allocating %s\n", err_string);
+        exit(1) ;
     }
     return p ;
 }
 
+#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+static void *
+my_aligned_malloc(size_t sz, const char *err_string)
+{
+    void *p;
+    if (posix_memalign(&p, SIMD_SIZE, sz) != 0) {
+        fprintf(stderr, "-- aligned malloc failure allocating %s\n", err_string);
+        exit(1) ;
+    }
+    return p;
+}
+
+#define NEW_GF_MATRIX(rows, cols) \
+    (gf *)my_aligned_malloc(rows * cols * sizeof(gf), " ## __LINE__ ## " )
+
+#else
+
 #define NEW_GF_MATRIX(rows, cols) \
     (gf *)my_malloc(rows * cols * sizeof(gf), " ## __LINE__ ## " )
+
+#endif
 
 /*
  * initialize the data structures used for computations in GF.
@@ -271,14 +296,14 @@ generate_gf(void)
      * The first GF_BITS powers are simply bits shifted to the left.
      */
     for (i = 0; i < GF_BITS; i++, mask <<= 1 ) {
-	gf_exp[i] = mask;
-	gf_log[gf_exp[i]] = i;
-	/*
-	 * If Pp[i] == 1 then \alpha ** i occurs in poly-repr
-	 * gf_exp[GF_BITS] = \alpha ** GF_BITS
-	 */
-	if ( Pp[i] == '1' )
-	    gf_exp[GF_BITS] ^= mask;
+        gf_exp[i] = mask;
+        gf_log[gf_exp[i]] = i;
+        /*
+         * If Pp[i] == 1 then \alpha ** i occurs in poly-repr
+         * gf_exp[GF_BITS] = \alpha ** GF_BITS
+         */
+        if ( Pp[i] == '1' )
+            gf_exp[GF_BITS] ^= mask;
     }
     /*
      * now gf_exp[GF_BITS] = \alpha ** GF_BITS is complete, so can als
@@ -293,19 +318,19 @@ generate_gf(void)
      */
     mask = 1 << (GF_BITS - 1 ) ;
     for (i = GF_BITS + 1; i < GF_SIZE; i++) {
-	if (gf_exp[i - 1] >= mask)
-	    gf_exp[i] = gf_exp[GF_BITS] ^ ((gf_exp[i - 1] ^ mask) << 1);
-	else
-	    gf_exp[i] = gf_exp[i - 1] << 1;
-	gf_log[gf_exp[i]] = i;
+        if (gf_exp[i - 1] >= mask)
+            gf_exp[i] = gf_exp[GF_BITS] ^ ((gf_exp[i - 1] ^ mask) << 1);
+        else
+            gf_exp[i] = gf_exp[i - 1] << 1;
+        gf_log[gf_exp[i]] = i;
     }
     /*
      * log(0) is not defined, so use a special value
      */
-    gf_log[0] =	GF_SIZE ;
+    gf_log[0] = GF_SIZE ;
     /* set the extended gf_exp values for fast multiply */
     for (i = 0 ; i < GF_SIZE ; i++)
-	gf_exp[i + GF_SIZE] = gf_exp[i] ;
+        gf_exp[i + GF_SIZE] = gf_exp[i] ;
 
     /*
      * again special cases. 0 has no inverse. This used to
@@ -315,7 +340,39 @@ generate_gf(void)
     inverse[0] = 0 ;
     inverse[1] = 1;
     for (i=2; i<=GF_SIZE; i++)
-	inverse[i] = gf_exp[GF_SIZE-gf_log[i]];
+        inverse[i] = gf_exp[GF_SIZE-gf_log[i]];
+#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+    /*
+     * TODO: refactor, optimiser et voir s'il faut aller à GF_SIZE * 2
+     */
+    for (i = 0; i <= GF_SIZE; i++) {
+        int j;
+        unsigned char value[8][16] __attribute__ ((aligned (16)));
+        
+        for (j = 0; j < 16; j++) {
+            mask = gf_mul(i, j);
+            value[0][j] = mask & 0xFF;
+            value[1][j] = (mask >> 8) & 0xFF;
+            mask = gf_mul(i, j << 4);
+            value[2][j] = mask & 0xFF;
+            value[3][j] = (mask >> 8) & 0xFF;
+            mask = gf_mul(i, j << 8);
+            value[4][j] = mask & 0xFF;
+            value[5][j] = (mask >> 8) & 0xFF;
+            mask = gf_mul(i, j << 12);
+            value[6][j] = mask & 0xFF;
+            value[7][j] = (mask >> 8) & 0xFF;
+        }
+        fast_gf_exp[i][0] = _mm_load_si128((__m128i*)value[0]);
+        fast_gf_exp[i][1] = _mm_load_si128((__m128i*)value[1]);
+        fast_gf_exp[i][2] = _mm_load_si128((__m128i*)value[2]);
+        fast_gf_exp[i][3] = _mm_load_si128((__m128i*)value[3]);
+        fast_gf_exp[i][4] = _mm_load_si128((__m128i*)value[4]);
+        fast_gf_exp[i][5] = _mm_load_si128((__m128i*)value[5]);
+        fast_gf_exp[i][6] = _mm_load_si128((__m128i*)value[6]);
+        fast_gf_exp[i][7] = _mm_load_si128((__m128i*)value[7]);
+    }
+#endif
 }
 
 /*
@@ -347,31 +404,31 @@ addmul1(gf *dst1, const gf *src1, gf c, int sz)
 
 #if (UNROLL > 1) /* unrolling by 8/16 is quite effective on the pentium */
     for (; dst < lim ; dst += UNROLL, src += UNROLL ) {
-	GF_ADDMULC( dst[0] , src[0] );
-	GF_ADDMULC( dst[1] , src[1] );
-	GF_ADDMULC( dst[2] , src[2] );
-	GF_ADDMULC( dst[3] , src[3] );
+        GF_ADDMULC( dst[0] , src[0] );
+        GF_ADDMULC( dst[1] , src[1] );
+        GF_ADDMULC( dst[2] , src[2] );
+        GF_ADDMULC( dst[3] , src[3] );
 #if (UNROLL > 4)
-	GF_ADDMULC( dst[4] , src[4] );
-	GF_ADDMULC( dst[5] , src[5] );
-	GF_ADDMULC( dst[6] , src[6] );
-	GF_ADDMULC( dst[7] , src[7] );
+        GF_ADDMULC( dst[4] , src[4] );
+        GF_ADDMULC( dst[5] , src[5] );
+        GF_ADDMULC( dst[6] , src[6] );
+        GF_ADDMULC( dst[7] , src[7] );
 #endif
 #if (UNROLL > 8)
-	GF_ADDMULC( dst[8] , src[8] );
-	GF_ADDMULC( dst[9] , src[9] );
-	GF_ADDMULC( dst[10] , src[10] );
-	GF_ADDMULC( dst[11] , src[11] );
-	GF_ADDMULC( dst[12] , src[12] );
-	GF_ADDMULC( dst[13] , src[13] );
-	GF_ADDMULC( dst[14] , src[14] );
-	GF_ADDMULC( dst[15] , src[15] );
+        GF_ADDMULC( dst[8] , src[8] );
+        GF_ADDMULC( dst[9] , src[9] );
+        GF_ADDMULC( dst[10] , src[10] );
+        GF_ADDMULC( dst[11] , src[11] );
+        GF_ADDMULC( dst[12] , src[12] );
+        GF_ADDMULC( dst[13] , src[13] );
+        GF_ADDMULC( dst[14] , src[14] );
+        GF_ADDMULC( dst[15] , src[15] );
 #endif
     }
 #endif
     lim += UNROLL - 1 ;
     for (; dst < lim; dst++, src++ )		/* final components */
-	GF_ADDMULC( *dst , *src );
+        GF_ADDMULC( *dst , *src );
 }
 
 /*
@@ -383,16 +440,138 @@ matmul(gf *a, gf *b, gf *c, int n, int k, int m)
     int row, col, i ;
 
     for (row = 0; row < n ; row++) {
-	for (col = 0; col < m ; col++) {
-	    gf *pa = &a[ row * k ];
-	    gf *pb = &b[ col ];
-	    gf acc = 0 ;
-	    for (i = 0; i < k ; i++, pa++, pb += m )
-		acc ^= gf_mul( *pa, *pb ) ;
-	    c[ row * m + col ] = acc ;
-	}
+        for (col = 0; col < m ; col++) {
+            gf *pa = &a[ row * k ];
+            gf *pb = &b[ col ];
+            gf acc = 0 ;
+            for (i = 0; i < k ; i++, pa++, pb += m )
+                acc ^= gf_mul( *pa, *pb ) ;
+            c[ row * m + col ] = acc ;
+        }
     }
 }
+
+#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+/*
+ * does the same as matmul() but A and B are assumed to store log values
+ */
+static void
+matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
+{
+    int row, col, i ;
+
+    /*
+    for (row = 0; row < n ; row++) {
+        for (col = 0; col < m ; col++) {
+            gf *pa = &a[ row * k ];
+            gf *pb = &b[ col ];
+            gf acc = 0 ;
+            for (i = 0; i < k ; i++, pa++, pb += m )
+            {
+                if (*pa != GF_SIZE && *pb != GF_SIZE)
+                    acc ^= gf_exp[(int)*pa + (int)*pb];
+            }
+            c[ row * m + col ] = acc ;
+        }
+    }
+    */
+    memset(c, 0, sizeof(gf) * m * n);
+    /* mask of 16 bits values set to 0xFF */
+    const __m128i mask1 = _mm_set1_epi16(0x00FF);
+    /* mask of 8 bits values set to 0xF */
+    const __m128i mask2 = _mm_set1_epi8(0x0F);
+    for (row = 0; row < n ; row++)
+    {
+        for (i = 0; i < k; i++)
+        {
+            const gf pa = a[ row * k + i ];
+            
+            if (pa != 0)
+            {
+                /* pointer to the exp tables for pa */
+                const __m128i * tables = fast_gf_exp[pa];
+                
+                for (col = 0; col < (m & ~(SIMD_SIZE - 1)) ; col += (SIMD_SIZE / sizeof(gf)))
+                {
+                    /* load 8 gf */
+                    const __m128i data = _mm_loadu_si128((__m128i*)&b[ col + i * m ]);
+                    /* keep the 4 low bits of each byte */
+                    __m128i datal = _mm_and_si128(data, mask2);
+                    /* copy the 4 high bits of each byte from data to datah as low bits */
+                    __m128i datah = _mm_srli_epi16(_mm_andnot_si128(mask2, data), 4);
+                    
+                    __m128i * target = (__m128i*)&c[ row * m + col ];
+                    
+                    /* clear result variable */
+                    __m128i tmp_acc = _mm_setzero_si128();
+                    __m128i cur;
+                    
+                    /* compute the 4 low bits of the low byte of the product */
+                    cur = _mm_shuffle_epi8(tables[0], datal);
+                    cur = _mm_and_si128(cur, mask1);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    /* compute the 4 low bits of the high byte of the product */
+                    cur = _mm_shuffle_epi8(tables[1], datal);
+                    cur = _mm_slli_epi16(cur, 8);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    /* compute something... */
+                    cur = _mm_shuffle_epi8(tables[2], datah);
+                    cur = _mm_and_si128(cur, mask1);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[3], datah);
+                    cur = _mm_slli_epi16(cur, 8);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    
+                    datal = _mm_srli_epi16(datal, 8);
+                    datah = _mm_srli_epi16(datah, 8);
+                    
+                    
+                    cur = _mm_shuffle_epi8(tables[4], datal);
+                    cur = _mm_and_si128(cur, mask1);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[5], datal);
+                    cur = _mm_slli_epi16(cur, 8);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[6], datah);
+                    cur = _mm_and_si128(cur, mask1);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[7], datah);
+                    cur = _mm_slli_epi16(cur, 8);
+                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
+                    
+                    *target = _mm_xor_si128(*target, tmp_acc);
+                }
+                for (; col < m ; col++)
+                {
+                    const gf pb = b[ col + i * m ];
+                    c[ row * m + col ] ^= gf_mul( pa, pb ) ;
+                }
+            }
+        }
+    }
+/* TODO: revoir le mode debug */
+#ifdef DEBUG
+    for (row = 0; row < n ; row++) {
+        for (col = 0; col < m ; col++) {
+            gf *pa = &a[ row * k ];
+            gf *pb = &b[ col ];
+            gf acc = 0 ;
+            for (i = 0; i < k ; i++, pa++, pb += m )
+            {
+                acc ^= gf_mul( *pa, *pb ) ;
+            }
+            if (c[ row * m + col ] != acc)
+                    printf("%d, %d: %hu %hu\n", row, col, acc, c[ row * m + col ]);
+        }
+    }
+#endif
+}
+#endif
 
 #ifdef DEBUG
 /*
@@ -404,12 +583,12 @@ is_identity(gf *m, int k)
 {
     int row, col ;
     for (row=0; row<k; row++)
-	for (col=0; col<k; col++)
-	    if ( (row==col && *m != 1) ||
-		 (row!=col && *m != 0) )
-		 return 0 ;
-	    else
-		m++ ;
+        for (col=0; col<k; col++)
+            if ( (row==col && *m != 1) ||
+                 (row!=col && *m != 0) )
+                 return 0 ;
+            else
+                m++ ;
     return 1 ;
 }
 #endif /* debug */
@@ -440,102 +619,102 @@ invert_mat(gf *src, int k)
      * ipiv marks elements already used as pivots.
      */
     for (i = 0; i < k ; i++)
-	ipiv[i] = 0 ;
+        ipiv[i] = 0 ;
 
     for (col = 0; col < k ; col++) {
-	gf *pivot_row ;
-	/*
-	 * Zeroing column 'col', look for a non-zero element.
-	 * First try on the diagonal, if it fails, look elsewhere.
-	 */
-	irow = icol = -1 ;
-	if (ipiv[col] != 1 && src[col*k + col] != 0) {
-	    irow = col ;
-	    icol = col ;
-	    goto found_piv ;
-	}
-	for (row = 0 ; row < k ; row++) {
-	    if (ipiv[row] != 1) {
-		for (ix = 0 ; ix < k ; ix++) {
-		    DEB( pivloops++ ; )
-		    if (ipiv[ix] == 0) {
-			if (src[row*k + ix] != 0) {
-			    irow = row ;
-			    icol = ix ;
-			    goto found_piv ;
-			}
-		    } else if (ipiv[ix] > 1) {
-			fprintf(stderr, "singular matrix\n");
-			goto fail ; 
-		    }
-		}
-	    }
-	}
-	if (icol == -1) {
-	    fprintf(stderr, "XXX pivot not found!\n");
-	    goto fail ;
-	}
+        gf *pivot_row ;
+        /*
+         * Zeroing column 'col', look for a non-zero element.
+         * First try on the diagonal, if it fails, look elsewhere.
+         */
+        irow = icol = -1 ;
+        if (ipiv[col] != 1 && src[col*k + col] != 0) {
+            irow = col ;
+            icol = col ;
+            goto found_piv ;
+        }
+        for (row = 0 ; row < k ; row++) {
+            if (ipiv[row] != 1) {
+                for (ix = 0 ; ix < k ; ix++) {
+                    DEB( pivloops++ ; )
+                    if (ipiv[ix] == 0) {
+                        if (src[row*k + ix] != 0) {
+                            irow = row ;
+                            icol = ix ;
+                            goto found_piv ;
+                        }
+                    } else if (ipiv[ix] > 1) {
+                        fprintf(stderr, "singular matrix\n");
+                        goto fail ; 
+                    }
+                }
+            }
+        }
+        if (icol == -1) {
+            fprintf(stderr, "XXX pivot not found!\n");
+            goto fail ;
+        }
 found_piv:
-	++(ipiv[icol]) ;
-	/*
-	 * swap rows irow and icol, so afterwards the diagonal
-	 * element will be correct. Rarely done, not worth
-	 * optimizing.
-	 */
-	if (irow != icol) {
-	    for (ix = 0 ; ix < k ; ix++ ) {
-		SWAP( src[irow*k + ix], src[icol*k + ix], gf) ;
-	    }
-	}
-	indxr[col] = irow ;
-	indxc[col] = icol ;
-	pivot_row = &src[icol*k] ;
-	c = pivot_row[icol] ;
-	if (c == 0) {
-	    fprintf(stderr, "singular matrix 2\n");
-	    goto fail ;
-	}
-	if (c != 1 ) { /* otherwhise this is a NOP */
-	    /*
-	     * this is done often , but optimizing is not so
-	     * fruitful, at least in the obvious ways (unrolling)
-	     */
-	    DEB( pivswaps++ ; )
-	    c = inverse[ c ] ;
-	    pivot_row[icol] = 1 ;
-	    for (ix = 0 ; ix < k ; ix++ )
-		pivot_row[ix] = gf_mul(c, pivot_row[ix] );
-	}
-	/*
-	 * from all rows, remove multiples of the selected row
-	 * to zero the relevant entry (in fact, the entry is not zero
-	 * because we know it must be zero).
-	 * (Here, if we know that the pivot_row is the identity,
-	 * we can optimize the addmul).
-	 */
-	id_row[icol] = 1;
-	if (bcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
-	    for (p = src, ix = 0 ; ix < k ; ix++, p += k ) {
-		if (ix != icol) {
-		    c = p[icol] ;
-		    p[icol] = 0 ;
-		    addmul(p, pivot_row, c, k );
-		}
-	    }
-	}
-	id_row[icol] = 0;
+        ++(ipiv[icol]) ;
+        /*
+         * swap rows irow and icol, so afterwards the diagonal
+         * element will be correct. Rarely done, not worth
+         * optimizing.
+         */
+        if (irow != icol) {
+            for (ix = 0 ; ix < k ; ix++ ) {
+                SWAP( src[irow*k + ix], src[icol*k + ix], gf) ;
+            }
+        }
+        indxr[col] = irow ;
+        indxc[col] = icol ;
+        pivot_row = &src[icol*k] ;
+        c = pivot_row[icol] ;
+        if (c == 0) {
+            fprintf(stderr, "singular matrix 2\n");
+            goto fail ;
+        }
+        if (c != 1 ) { /* otherwhise this is a NOP */
+            /*
+             * this is done often , but optimizing is not so
+             * fruitful, at least in the obvious ways (unrolling)
+             */
+            DEB( pivswaps++ ; )
+            c = inverse[ c ] ;
+            pivot_row[icol] = 1 ;
+            for (ix = 0 ; ix < k ; ix++ )
+                pivot_row[ix] = gf_mul(c, pivot_row[ix] );
+        }
+        /*
+         * from all rows, remove multiples of the selected row
+         * to zero the relevant entry (in fact, the entry is not zero
+         * because we know it must be zero).
+         * (Here, if we know that the pivot_row is the identity,
+         * we can optimize the addmul).
+         */
+        id_row[icol] = 1;
+        if (bcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
+            for (p = src, ix = 0 ; ix < k ; ix++, p += k ) {
+                if (ix != icol) {
+                    c = p[icol] ;
+                    p[icol] = 0 ;
+                    addmul(p, pivot_row, c, k );
+                }
+            }
+        }
+        id_row[icol] = 0;
     } /* done all columns */
     for (col = k-1 ; col >= 0 ; col-- ) {
-	if (indxr[col] <0 || indxr[col] >= k)
-	    fprintf(stderr, "AARGH, indxr[col] %d\n", indxr[col]);
-	else if (indxc[col] <0 || indxc[col] >= k)
-	    fprintf(stderr, "AARGH, indxc[col] %d\n", indxc[col]);
-	else
-	if (indxr[col] != indxc[col] ) {
-	    for (row = 0 ; row < k ; row++ ) {
-		SWAP( src[row*k + indxr[col]], src[row*k + indxc[col]], gf) ;
-	    }
-	}
+        if (indxr[col] <0 || indxr[col] >= k)
+            fprintf(stderr, "AARGH, indxr[col] %d\n", indxr[col]);
+        else if (indxc[col] <0 || indxc[col] >= k)
+            fprintf(stderr, "AARGH, indxc[col] %d\n", indxc[col]);
+        else
+        if (indxr[col] != indxc[col] ) {
+            for (row = 0 ; row < k ; row++ ) {
+                SWAP( src[row*k + indxr[col]], src[row*k + indxc[col]], gf) ;
+            }
+        }
     }
     error = 0 ;
 fail:
@@ -567,7 +746,7 @@ invert_vdm(gf *src, int k)
     gf t, xx ;
 
     if (k == 1) 	/* degenerate case, matrix must be p^0 = 1 */
-	return 0 ;
+        return 0 ;
     /*
      * c holds the coefficient of P(x) = Prod (x - p_i), i=0..k-1
      * b holds the coefficient for the matrix inversion
@@ -578,8 +757,8 @@ invert_vdm(gf *src, int k)
     p = NEW_GF_MATRIX(1, k);
    
     for ( j=1, i = 0 ; i < k ; i++, j+=k ) {
-	c[i] = 0 ;
-	p[i] = src[j] ;    /* p[i] */
+        c[i] = 0 ;
+        p[i] = src[j] ;    /* p[i] */
     }
     /*
      * construct coeffs. recursively. We know c[k] = 1 (implicit)
@@ -589,25 +768,25 @@ invert_vdm(gf *src, int k)
      */
     c[k-1] = p[0] ;	/* really -p(0), but x = -x in GF(2^m) */
     for (i = 1 ; i < k ; i++ ) {
-	gf p_i = p[i] ; /* see above comment */
-	for (j = k-1  - ( i - 1 ) ; j < k-1 ; j++ )
-	    c[j] ^= gf_mul( p_i, c[j+1] ) ;
-	c[k-1] ^= p_i ;
+        gf p_i = p[i] ; /* see above comment */
+        for (j = k-1  - ( i - 1 ) ; j < k-1 ; j++ )
+            c[j] ^= gf_mul( p_i, c[j+1] ) ;
+        c[k-1] ^= p_i ;
     }
 
     for (row = 0 ; row < k ; row++ ) {
-	/*
-	 * synthetic division etc.
-	 */
-	xx = p[row] ;
-	t = 1 ;
-	b[k-1] = 1 ; /* this is in fact c[k] */
-	for (i = k-2 ; i >= 0 ; i-- ) {
-	    b[i] = c[i+1] ^ gf_mul(xx, b[i+1]) ;
-	    t = gf_mul(xx, t) ^ b[i] ;
-	}
-	for (col = 0 ; col < k ; col++ )
-	    src[col*k + row] = gf_mul(inverse[t], b[col] );
+        /*
+         * synthetic division etc.
+         */
+        xx = p[row] ;
+        t = 1 ;
+        b[k-1] = 1 ; /* this is in fact c[k] */
+        for (i = k-2 ; i >= 0 ; i-- ) {
+            b[i] = c[i+1] ^ gf_mul(xx, b[i+1]) ;
+            t = gf_mul(xx, t) ^ b[i] ;
+        }
+        for (col = 0 ; col < k ; col++ )
+            src[col*k + row] = gf_mul(inverse[t], b[col] );
     }
     free(c) ;
     free(b) ;
@@ -649,8 +828,8 @@ fec_free(struct fec_parms *p)
 {
     if (p==NULL ||
        p->magic != ( ( (FEC_MAGIC ^ p->k) ^ p->n) ^ (int)(p->enc_matrix)) ) {
-	fprintf(stderr, "bad parameters to fec_free\n");
-	return ;
+        fprintf(stderr, "bad parameters to fec_free\n");
+        return ;
     }
     free(p->enc_matrix);
     free(p);
@@ -669,12 +848,12 @@ fec_new(int k, int n)
     struct fec_parms *retval ;
 
     if (fec_initialized == 0)
-	init_fec();
+        init_fec();
 
     if (k > GF_SIZE + 1 || n > GF_SIZE + 1 || k > n ) {
-	fprintf(stderr, "Invalid parameters k %d n %d GF_SIZE %d\n",
-		k, n, GF_SIZE );
-	return NULL ;
+        fprintf(stderr, "Invalid parameters k %d n %d GF_SIZE %d\n",
+                k, n, GF_SIZE );
+        return NULL ;
     }
     retval = my_malloc(sizeof(struct fec_parms), "new_code");
     retval->k = k ;
@@ -688,10 +867,10 @@ fec_new(int k, int n)
      */
     tmp_m[0] = 1 ;
     for (col = 1; col < k ; col++)
-	tmp_m[col] = 0 ;
+        tmp_m[col] = 0 ;
     for (p = tmp_m + k, row = 0; row < n-1 ; row++, p += k) {
-	for ( col = 0 ; col < k ; col ++ )
-	    p[col] = gf_exp[modnn(row*col)];
+        for ( col = 0 ; col < k ; col ++ )
+            p[col] = gf_exp[modnn(row*col)];
     }
 
     /*
@@ -701,18 +880,29 @@ fec_new(int k, int n)
      */
     TICK(ticks[3]);
     invert_vdm(tmp_m, k); /* much faster than invert_mat */
+#if (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE)
     matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+#else
+    /* TODO: remettre? */
+    /* precompute log values */
+    /*
+    for (row = 0; row < n; row++)
+        for (col = 0; col < k; col++)
+            tmp_m[row * k + col] = gf_log[tmp_m[row * k + col]];
+    */
+    matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+#endif /* (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE) */
+    free(tmp_m);
     /*
      * the upper matrix is I so do not bother with a slow multiply
      */
     bzero(retval->enc_matrix, k*k*sizeof(gf) );
     for (p = retval->enc_matrix, col = 0 ; col < k ; col++, p += k+1 )
-	*p = 1 ;
-    free(tmp_m);
+        *p = 1 ;
     TOCK(ticks[3]);
 
     DDB(fprintf(stderr, "--- %ld us to build encoding matrix\n",
-	    ticks[3]);)
+            ticks[3]);)
     DEB(pr_matrix(retval->enc_matrix, n, k, "encoding_matrix");)
     return retval ;
 }
@@ -728,19 +918,20 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
     int i, k = code->k ;
     gf *p ;
 
-    if (GF_BITS > 8)
-	sz /= 2 ;
+#if (GF_BITS > 8)
+    sz /= 2 ;
+#endif
 
     if (index < k)
          bcopy(src[index], fec, sz*sizeof(gf) ) ;
     else if (index < code->n) {
-	p = &(code->enc_matrix[index*k] );
-	bzero(fec, sz*sizeof(gf));
-	for (i = 0; i < k ; i++)
-	    addmul(fec, src[i], p[i], sz ) ;
+        p = &(code->enc_matrix[index*k] );
+        bzero(fec, sz*sizeof(gf));
+        for (i = 0; i < k ; i++)
+            addmul(fec, src[i], p[i], sz ) ;
     } else
-	fprintf(stderr, "Invalid index %d (max %d)\n",
-	    index, code->n - 1 );
+        fprintf(stderr, "Invalid index %d (max %d)\n",
+            index, code->n - 1 );
 }
 
 /*
@@ -752,30 +943,30 @@ shuffle(gf *pkt[], int index[], int k)
     int i;
 
     for ( i = 0 ; i < k ; ) {
-	if (index[i] >= k || index[i] == i)
-	    i++ ;
-	else {
-	    /*
-	     * put pkt in the right position (first check for conflicts).
-	     */
-	    int c = index[i] ;
+        if (index[i] >= k || index[i] == i)
+            i++ ;
+        else {
+            /*
+             * put pkt in the right position (first check for conflicts).
+             */
+            int c = index[i] ;
 
-	    if (index[c] == c) {
-		DEB(fprintf(stderr, "\nshuffle, error at %d\n", i);)
-		return 1 ;
-	    }
-	    SWAP(index[i], index[c], int) ;
-	    SWAP(pkt[i], pkt[c], gf *) ;
-	}
+            if (index[c] == c) {
+                DEB(fprintf(stderr, "\nshuffle, error at %d\n", i);)
+                return 1 ;
+            }
+            SWAP(index[i], index[c], int) ;
+            SWAP(pkt[i], pkt[c], gf *) ;
+        }
     }
     DEB( /* just test that it works... */
     for ( i = 0 ; i < k ; i++ ) {
-	if (index[i] < k && index[i] != i) {
-	    fprintf(stderr, "shuffle: after\n");
-	    for (i=0; i<k ; i++) fprintf(stderr, "%3d ", index[i]);
-	    fprintf(stderr, "\n");
-	    return 1 ;
-	}
+        if (index[i] < k && index[i] != i) {
+            fprintf(stderr, "shuffle: after\n");
+            for (i=0; i<k ; i++) fprintf(stderr, "%3d ", index[i]);
+            fprintf(stderr, "\n");
+            return 1 ;
+        }
     }
     )
     return 0 ;
@@ -795,24 +986,24 @@ build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
     TICK(ticks[9]);
     for (i = 0, p = matrix ; i < k ; i++, p += k ) {
 #if 1 /* this is simply an optimization, not very useful indeed */
-	if (index[i] < k) {
-	    bzero(p, k*sizeof(gf) );
-	    p[i] = 1 ;
-	} else
+        if (index[i] < k) {
+            bzero(p, k*sizeof(gf) );
+            p[i] = 1 ;
+        } else
 #endif
-	if (index[i] < code->n )
-	    bcopy( &(code->enc_matrix[index[i]*k]), p, k*sizeof(gf) ); 
-	else {
-	    fprintf(stderr, "decode: invalid index %d (max %d)\n",
-		index[i], code->n - 1 );
-	    free(matrix) ;
-	    return NULL ;
-	}
+        if (index[i] < code->n )
+            bcopy( &(code->enc_matrix[index[i]*k]), p, k*sizeof(gf) ); 
+        else {
+            fprintf(stderr, "decode: invalid index %d (max %d)\n",
+                index[i], code->n - 1 );
+            free(matrix) ;
+            return NULL ;
+        }
     }
     TICK(ticks[9]);
     if (invert_mat(matrix, k)) {
-	free(matrix);
-	matrix = NULL ;
+        free(matrix);
+        matrix = NULL ;
     }
     TOCK(ticks[9]);
     return matrix ;
@@ -836,35 +1027,36 @@ fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
     gf **new_pkt ;
     int row, col , k = code->k ;
 
-    if (GF_BITS > 8)
-	sz /= 2 ;
+#if (GF_BITS > 8)
+    sz /= 2 ;
+#endif
 
     if (shuffle(pkt, index, k))	/* error if true */
-	return 1 ;
+        return 1 ;
     m_dec = build_decode_matrix(code, pkt, index);
 
     if (m_dec == NULL)
-	return 1 ; /* error */
+        return 1 ; /* error */
     /*
      * do the actual decoding
      */
     new_pkt = my_malloc (k * sizeof (gf * ), "new pkt pointers" );
     for (row = 0 ; row < k ; row++ ) {
-	if (index[row] >= k) {
-	    new_pkt[row] = my_malloc (sz * sizeof (gf), "new pkt buffer" );
-	    bzero(new_pkt[row], sz * sizeof(gf) ) ;
-	    for (col = 0 ; col < k ; col++ )
-		addmul(new_pkt[row], pkt[col], m_dec[row*k + col], sz) ;
-	}
+        if (index[row] >= k) {
+            new_pkt[row] = my_malloc (sz * sizeof (gf), "new pkt buffer" );
+            bzero(new_pkt[row], sz * sizeof(gf) ) ;
+            for (col = 0 ; col < k ; col++ )
+                addmul(new_pkt[row], pkt[col], m_dec[row*k + col], sz) ;
+        }
     }
     /*
      * move pkts to their final destination
      */
     for (row = 0 ; row < k ; row++ ) {
-	if (index[row] >= k) {
-	    bcopy(new_pkt[row], pkt[row], sz*sizeof(gf));
-	    free(new_pkt[row]);
-	}
+        if (index[row] >= k) {
+            bcopy(new_pkt[row], pkt[row], sz*sizeof(gf));
+            free(new_pkt[row]);
+        }
     }
     free(new_pkt);
     free(m_dec);
@@ -884,16 +1076,16 @@ test_gf()
      */
     for (i=0; i<= GF_SIZE; i++) {
         if (gf_exp[gf_log[i]] != i)
-	    fprintf(stderr, "bad exp/log i %d log %d exp(log) %d\n",
-		i, gf_log[i], gf_exp[gf_log[i]]);
+            fprintf(stderr, "bad exp/log i %d log %d exp(log) %d\n",
+                i, gf_log[i], gf_exp[gf_log[i]]);
 
         if (i != 0 && gf_mul(i, inverse[i]) != 1)
-	    fprintf(stderr, "bad mul/inv i %d inv %d i*inv(i) %d\n",
-		i, inverse[i], gf_mul(i, inverse[i]) );
-	if (gf_mul(0,i) != 0)
-	    fprintf(stderr, "bad mul table 0,%d\n",i);
-	if (gf_mul(i,0) != 0)
-	    fprintf(stderr, "bad mul table %d,0\n",i);
+            fprintf(stderr, "bad mul/inv i %d inv %d i*inv(i) %d\n",
+                i, inverse[i], gf_mul(i, inverse[i]) );
+        if (gf_mul(0,i) != 0)
+            fprintf(stderr, "bad mul table 0,%d\n",i);
+        if (gf_mul(i,0) != 0)
+            fprintf(stderr, "bad mul table %d,0\n",i);
     }
 }
 #endif /* TEST */
