@@ -46,7 +46,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <immintrin.h>
+#include <xmmintrin.h>
+#include <tmmintrin.h>
 
 /*
  * compatibility stuff
@@ -500,8 +501,6 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
                     /* copy the 4 high bits of each byte from data to datah as low bits */
                     __m128i datah = _mm_srli_epi16(_mm_andnot_si128(mask2, data), 4);
                     
-                    __m128i * target = (__m128i*)&c[ row * m + col ];
-                    
                     /* clear result variable */
                     __m128i tmp_acc = _mm_setzero_si128();
                     __m128i cur;
@@ -544,7 +543,9 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
                     cur = _mm_slli_epi16(cur, 8);
                     tmp_acc = _mm_xor_si128(tmp_acc, cur);
                     
-                    *target = _mm_xor_si128(*target, tmp_acc);
+		    cur = _mm_loadu_si128((__m128i*)&c[ row * m + col ]);
+                    cur = _mm_xor_si128(cur, tmp_acc);
+		    _mm_storeu_si128((__m128i*)&c[ row * m + col ], cur);
                 }
                 for (; col < m ; col++)
                 {
