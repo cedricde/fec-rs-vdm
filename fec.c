@@ -532,12 +532,12 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* mask of 8 bits values set to 0xF */
     const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
     
-    /* pointer to the cell in a */
+    /* pointer to the cell in a (pa = &a[row * k + i]) */
     const gf * pa = a;
     
     for (row = 0; row < n ; row++)
     {
-        /* pointer to the cell in b */
+        /* pointer to the cell in b (pb = &b[i * m + col]) */
         const gf * pb = b;
         
         for (i = 0; i < k; i++, pa++)
@@ -547,7 +547,7 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 /* pointer to the exp tables for *pa */
                 const v16b * tables = (const v16b *)fast_gf_exp[*pa];
                 
-                /* pointer to the output cell in c */
+                /* pointer to the output cell in c (pc = &c[row * m + col]) */
                 gf * pc = &c[row * m];
                 
                 /* compute first columns until reaching SSE alignment (16 bytes) */
@@ -557,7 +557,7 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 }
                 
                 /* compute 8 columns at a time */
-                for (; col < (m & ~(8 - 1)) ; col += 8, pb += 8, pc += 8)
+                for (; col < (m - 8) ; col += 8, pb += 8, pc += 8)
                 {
                     /* accumulator and working variables */
                     v8gf acc;
@@ -621,12 +621,12 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* mask of 8 bits values set to 0xF */
     const __m128i mask2 = _mm_set1_epi8(0x0F);
     
-    /* pointer to the cell in a */
+    /* pointer to the cell in a (pa = &a[row * k + i]) */
     const gf * pa = a;
     
     for (row = 0; row < n ; row++)
     {
-        /* pointer to the cell in b */
+        /* pointer to the cell in b (pb = &b[i * m + col]) */
         const gf * pb = b;
         
         for (i = 0; i < k; i++, pa++)
@@ -636,7 +636,7 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 /* pointer to the exp tables for *pa */
                 const __m128i * tables = fast_gf_exp[*pa];
                 
-                /* pointer to the output cell in c */
+                /* pointer to the output cell in c (pc = &c[row * m + col]) */
                 gf * pc = &c[row * m];
                 
                 /* compute first columns until reaching SSE alignment (16 bytes) */
@@ -646,7 +646,7 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 }
                 
                 /* compute 8 columns at a time */
-                for (; col < (m & ~(8 - 1)) ; col += 8, pb += 8, pc += 8)
+                for (; col < (m - 8) ; col += 8, pb += 8, pc += 8)
                 {
                     /* accumulator and working variables */
                     __m128i acc, cur;
