@@ -48,19 +48,7 @@
 #include <stdint.h>
 #include <xmmintrin.h>
 #include <tmmintrin.h>
-
-/*
- * compatibility stuff
- */
-#ifdef MSDOS	/* but also for others, e.g. sun... */
-#define NEED_BCOPY
-#define bcmp(a,b,n) memcmp(a,b,n)
-#endif
-
-#ifdef NEED_BCOPY
-#define bcopy(s, d, siz)        memcpy((d), (s), (siz))
-#define bzero(d, siz)   memset((d), '\0', (siz))
-#endif
+#include <mm_malloc.h>
 
 /*
  * stuff used for testing purposes only
@@ -70,20 +58,9 @@
 #define DEB(x)
 #define DDB(x) x
 #define	DEBUG	0	/* minimal debugging */
-#ifdef	MSDOS
-#include <time.h>
-struct timeval {
-    unsigned long ticks;
-};
-#define gettimeofday(x, dummy) { (x)->ticks = clock() ; }
-#define DIFF_T(a,b) (1+ 1000000*(a.ticks - b.ticks) / CLOCKS_PER_SEC )
-typedef unsigned long u_long ;
-typedef unsigned short u_short ;
-#else /* typically, unix systems */
 #include <sys/time.h>
 #define DIFF_T(a,b) \
 	(1+ 1000000*(a.tv_sec - b.tv_sec) + (a.tv_usec - b.tv_usec) )
-#endif
 
 #define TICK(t) \
 	{struct timeval x ; \
@@ -119,9 +96,9 @@ u_long ticks[10];	/* vars for timekeeping */
 #error "GF_BITS must be 2 .. 16"
 #endif
 #if (GF_BITS <= 8)
-typedef unsigned char gf;
+typedef uint8_t gf;
 #else
-typedef unsigned short gf;
+typedef uint16_t gf;
 #endif
 
 #define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
@@ -130,24 +107,28 @@ typedef unsigned short gf;
  * Primitive polynomials - see Lin & Costello, Appendix A,
  * and  Lee & Messerschmitt, p. 453.
  */
-static const char *allPp[] = {    /* GF_BITS	polynomial		*/
-    NULL,		    /*  0	no code			*/
-    NULL,		    /*  1	no code			*/
-    "111",		    /*  2	1+x+x^2			*/
-    "1101",		    /*  3	1+x+x^3			*/
-    "11001",		    /*  4	1+x+x^4			*/
-    "101001",		    /*  5	1+x^2+x^5		*/
-    "1100001",		    /*  6	1+x+x^6			*/
-    "10010001",		    /*  7	1 + x^3 + x^7		*/
-    "101110001",	    /*  8	1+x^2+x^3+x^4+x^8	*/
-    "1000100001",	    /*  9	1+x^4+x^9		*/
-    "10010000001",	    /* 10	1+x^3+x^10		*/
-    "101000000001",	    /* 11	1+x^2+x^11		*/
-    "1100101000001",	    /* 12	1+x+x^4+x^6+x^12	*/
-    "11011000000001",	    /* 13	1+x+x^3+x^4+x^13	*/
-    "110000100010001",	    /* 14	1+x+x^6+x^10+x^14	*/
-    "1100000000000001",	    /* 15	1+x+x^15		*/
-    "11010000000010001"	    /* 16	1+x+x^3+x^12+x^16	*/
+static const struct
+{
+    int number;
+    const char * string;
+} allPp[] = {                           /* GF_BITS  polynomial          */
+    { 0x00000, NULL },                  /*      0    no code            */
+    { 0x00000, NULL },                  /*      1    no code            */
+    { 0x00007, "111" },                 /*      2    1+x+x^2            */
+    { 0x0000b, "1101" },                /*      3    1+x+x^3            */
+    { 0x00013, "11001" },               /*      4    1+x+x^4            */
+    { 0x00025, "101001" },              /*      5    1+x^2+x^5          */
+    { 0x00043, "1100001" },             /*      6    1+x+x^6            */
+    { 0x00089, "10010001" },            /*      7    1 + x^3 + x^7      */
+    { 0x0011d, "101110001" },           /*      8    1+x^2+x^3+x^4+x^8  */
+    { 0x00211, "1000100001" },          /*      9    1+x^4+x^9          */
+    { 0x00409, "10010000001" },         /*     10    1+x^3+x^10         */
+    { 0x00805, "101000000001" },        /*     11    1+x^2+x^11         */
+    { 0x01053, "1100101000001" },       /*     12    1+x+x^4+x^6+x^12   */
+    { 0x0201b, "11011000000001" },      /*     13    1+x+x^3+x^4+x^13   */
+    { 0x04443, "110000100010001" },     /*     14    1+x+x^6+x^10+x^14  */
+    { 0x08003, "1100000000000001" },    /*     15    1+x+x^15           */
+    { 0x1100b, "11010000000010001" }    /*     16    1+x+x^3+x^12+x^16  */
 };
 
 
@@ -161,12 +142,13 @@ static const char *allPp[] = {    /* GF_BITS	polynomial		*/
  */
 
 static gf gf_exp[2*GF_SIZE];	/* index->poly form conversion table	*/
-static int gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
+static gf gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
 static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
 #if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
-#define SIMD_SIZE 16
+typedef uint16_t v8gf __attribute__((vector_size(16)));
+typedef uint8_t v16b __attribute__((vector_size(16)));
 static __m128i fast_gf_exp[GF_SIZE + 1][8];
 #endif
 /*
@@ -210,7 +192,7 @@ init_mul_table()
     int i, j;
     for (i=0; i< GF_SIZE+1; i++)
         for (j=0; j< GF_SIZE+1; j++)
-            gf_mul_table[i][j] = gf_exp[modnn(gf_log[i] + gf_log[j]) ] ;
+            gf_mul_table[i][j] = gf_exp[modnn((int)gf_log[i] + (int)gf_log[j]) ] ;
 
     for (j=0; j< GF_SIZE+1; j++)
             gf_mul_table[0][j] = gf_mul_table[j][0] = 0;
@@ -221,7 +203,7 @@ gf_mul(gf x, gf y)
 {
     if (x == 0 || y == 0) return 0;
     
-    return gf_exp[gf_log[x] + gf_log[y] ] ;
+    return gf_exp[(int)gf_log[x] + (int)gf_log[y] ] ;
 }
 #define init_mul_table()
 
@@ -229,6 +211,31 @@ gf_mul(gf x, gf y)
 #define GF_MULC0(c) __gf_mulc_ = &gf_exp[ gf_log[c] ]
 #define GF_ADDMULC(dst, x) { if (x) dst ^= __gf_mulc_[ gf_log[x] ] ; }
 #endif
+
+/* Reference implementation of multiplication in Galois Field */
+static gf gf_mul_ref(gf x, gf y)
+{
+    int a = x, b = y, r = 0;
+    int i;
+    
+    for (i = 0; i < GF_BITS; i++)
+    {
+        if (b & 1)
+            r ^= a;
+        a <<= 1;
+        if (a & (1 << GF_BITS))
+            a ^= allPp[GF_BITS].number;
+        b >>= 1;
+    }
+    
+    return r;
+}
+
+/* Reference implementation of addition in Galois Field */
+static inline gf gf_add_ref(gf x, gf y)
+{
+    return x ^ y;
+}
 
 /*
  * Generate GF(2**m) from the irreducible polynomial p(X) in p[0]..p[m]
@@ -260,8 +267,8 @@ my_malloc(size_t sz, const char *err_string)
 static void *
 my_aligned_malloc(size_t sz, const char *err_string)
 {
-    void *p;
-    if (posix_memalign(&p, SIMD_SIZE, sz) != 0) {
+    void *p = _mm_malloc(sz, 16);
+    if (p == NULL) {
         fprintf(stderr, "-- aligned malloc failure allocating %s\n", err_string);
         exit(1) ;
     }
@@ -270,11 +277,13 @@ my_aligned_malloc(size_t sz, const char *err_string)
 
 #define NEW_GF_MATRIX(rows, cols) \
     (gf *)my_aligned_malloc(rows * cols * sizeof(gf), " ## __LINE__ ## " )
+#define DELETE_GF_MATRIX(m) _mm_free(m)
 
 #else
 
 #define NEW_GF_MATRIX(rows, cols) \
     (gf *)my_malloc(rows * cols * sizeof(gf), " ## __LINE__ ## " )
+#define DELETE_GF_MATRIX(m) free(m)
 
 #endif
 
@@ -286,7 +295,7 @@ generate_gf(void)
 {
     int i;
     gf mask;
-    const char *Pp =  allPp[GF_BITS] ;
+    const char *Pp =  allPp[GF_BITS].string ;
 
     mask = 1;	/* x ** 0 = 1 */
     gf_exp[GF_BITS] = 0; /* will be updated at the end of the 1st loop */
@@ -436,14 +445,14 @@ addmul1(gf *dst1, const gf *src1, gf c, int sz)
  * computes C = AB where A is n*k, B is k*m, C is n*m
  */
 static void
-matmul(gf *a, gf *b, gf *c, int n, int k, int m)
+matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     int row, col, i ;
 
     for (row = 0; row < n ; row++) {
         for (col = 0; col < m ; col++) {
-            gf *pa = &a[ row * k ];
-            gf *pb = &b[ col ];
+            const gf *pa = &a[ row * k ];
+            const gf *pb = &b[ col ];
             gf acc = 0 ;
             for (i = 0; i < k ; i++, pa++, pb += m )
                 acc ^= gf_mul( *pa, *pb ) ;
@@ -452,7 +461,31 @@ matmul(gf *a, gf *b, gf *c, int n, int k, int m)
     }
 }
 
-#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+#ifndef USE_ORIGINAL_CODE
+/*
+ * computes C = AB where A is n*k, B is k*m, C is n*m
+ * using reference functions
+ */
+static void
+matmul_ref(const gf *a, const gf *b, gf *c, int n, int k, int m)
+{
+    int row, col, i ;
+
+    for (row = 0; row < n ; row++)
+    {
+        for (col = 0; col < m ; col++)
+        {
+            const gf *pa = &a[row * k];
+            const gf *pb = &b[col];
+            gf acc = 0 ;
+            for (i = 0; i < k; i++, pa++, pb += m )
+                acc ^= gf_mul_ref(*pa, *pb);
+            c[row * m + col] = acc;
+        }
+    }
+}
+
+#if (GF_BITS > 8)
 /*
  * does the same as matmul() but A and B are assumed to store log values
  */
@@ -461,117 +494,288 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     int row, col, i ;
 
-    /*
-    for (row = 0; row < n ; row++) {
-        for (col = 0; col < m ; col++) {
-            gf *pa = &a[ row * k ];
-            gf *pb = &b[ col ];
+    for (row = 0; row < n ; row++)
+    {
+        for (col = 0; col < m ; col++)
+        {
+            const gf *pa = &a[row * k];
+            const gf *pb = &b[col];
             gf acc = 0 ;
             for (i = 0; i < k ; i++, pa++, pb += m )
             {
-                if (*pa != GF_SIZE && *pb != GF_SIZE)
+                if (*pa != 0 && *pb != 0)
                     acc ^= gf_exp[(int)*pa + (int)*pb];
             }
-            c[ row * m + col ] = acc ;
+            c[row * m + col] = acc;
         }
     }
-    */
-    memset(c, 0, sizeof(gf) * m * n);
+}
+#endif /* (GF_BITS > 8) */
+
+#if (GF_BITS > 8)
+/*
+ * computes C = AB where A is n*k, B is k*m, C is n*m
+ * using vector extensions
+ */
+static void
+matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
+{
+    int row, col, i ;
+    
+    /* clear output matrix */
+    memset(c, 0, m * n * sizeof(gf));
+    
+    /* mask of 16 bits values set to 0xFF */
+    const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
+    /* mask of 8 bits values set to 0xF */
+    const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
+    
+    /* pointer to the cell in a */
+    const gf * pa = a;
+    
+    for (row = 0; row < n ; row++)
+    {
+        /* pointer to the cell in b */
+        const gf * pb = b;
+        
+        for (i = 0; i < k; i++, pa++)
+        {
+            if (*pa != 0)
+            {
+                /* pointer to the exp tables for *pa */
+                const v16b * tables = (const v16b *)fast_gf_exp[*pa];
+                
+                /* pointer to the output cell in c */
+                gf * pc = &c[row * m];
+                
+                /* compute first columns until reaching SSE alignment (16 bytes) */
+                for (col = 0; ((uintptr_t)pb & (16 - 1)) != 0 && col < m; col++, pb++, pc++)
+                {
+                    *pc ^= gf_mul(*pa, *pb);
+                }
+                
+                /* compute 8 columns at a time */
+                for (; col < (m & ~(8 - 1)) ; col += 8, pb += 8, pc += 8)
+                {
+                    /* accumulator and working variables */
+                    v8gf acc;
+                    
+                    /* load 8 columns */
+                    const v8gf * data = (const v8gf*)pb;
+                    
+                    /* get the 4 low bits of each byte */
+                    v8gf datal = *data & mask2;
+                    /* get the 4 high bits of each byte moved to low bits */
+                    v8gf datah = (*data >> 4) & mask2;
+                    
+                    /* load current value in output matrix */
+                    memcpy(&acc, pc, sizeof(acc));
+                    
+                    /* compute the product of *pa with the 4 low and 4 high bits of the low byte of values in b */
+                    acc ^= (v8gf)__builtin_shuffle(tables[0], (v16b)datal) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(tables[1], (v16b)datal) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(tables[2], (v16b)datah) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(tables[3], (v16b)datah) << 8;
+                    
+                    /* compute the product of *pa with the 4 low and 4 high bits of the high byte of values in b */
+                    datal >>= 8;
+                    datah >>= 8;
+                    
+                    acc ^= (v8gf)__builtin_shuffle(tables[4], (v16b)datal) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(tables[5], (v16b)datal) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(tables[6], (v16b)datah) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(tables[7], (v16b)datah) << 8;
+                    
+                    /* update the output matrix with the accumulator */
+                    memcpy(pc, &acc, sizeof(acc));
+                }
+                
+                /* compute remaining columns */
+                for (; col < m; col++, pb++, pc++)
+                {
+                    *pc ^= gf_mul(*pa, *pb);
+                }
+            }
+        }
+    }
+}
+#endif /* (GF_BITS > 8) */
+
+#if (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8)
+/*
+ * computes C = AB where A is n*k, B is k*m, C is n*m
+ * using intrinsics requiring SSSE3
+ */
+static void 
+matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
+{
+    int row, col, i ;
+    
+    /* clear output matrix */
+    memset(c, 0, m * n * sizeof(gf));
+    
     /* mask of 16 bits values set to 0xFF */
     const __m128i mask1 = _mm_set1_epi16(0x00FF);
     /* mask of 8 bits values set to 0xF */
     const __m128i mask2 = _mm_set1_epi8(0x0F);
+    
+    /* pointer to the cell in a */
+    const gf * pa = a;
+    
+    for (row = 0; row < n ; row++)
+    {
+        /* pointer to the cell in b */
+        const gf * pb = b;
+        
+        for (i = 0; i < k; i++, pa++)
+        {
+            if (*pa != 0)
+            {
+                /* pointer to the exp tables for *pa */
+                const __m128i * tables = fast_gf_exp[*pa];
+                
+                /* pointer to the output cell in c */
+                gf * pc = &c[row * m];
+                
+                /* compute first columns until reaching SSE alignment (16 bytes) */
+                for (col = 0; ((uintptr_t)pb & (16 - 1)) != 0 && col < m; col++, pb++, pc++)
+                {
+                    *pc ^= gf_mul(*pa, *pb);
+                }
+                
+                /* compute 8 columns at a time */
+                for (; col < (m & ~(8 - 1)) ; col += 8, pb += 8, pc += 8)
+                {
+                    /* accumulator and working variables */
+                    __m128i acc, cur;
+                    
+                    /* load 8 columns */
+                    const __m128i data = _mm_load_si128((__m128i*)pb);
+                    
+                    /* get the 4 low bits of each byte */
+                    __m128i datal = _mm_and_si128(data, mask2);
+                    /* get the 4 high bits of each byte moved to low bits */
+                    __m128i datah = _mm_and_si128(_mm_srli_epi16(data, 4), mask2);
+                    
+                    /* compute the product of *pa with the 4 low and 4 high bits of the low byte of values in b */
+                    cur = _mm_shuffle_epi8(tables[0], datal);
+                    acc = _mm_and_si128(cur, mask1);
+                    
+                    cur = _mm_shuffle_epi8(tables[1], datal);
+                    cur = _mm_slli_epi16(cur, 8);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[2], datah);
+                    cur = _mm_and_si128(cur, mask1);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[3], datah);
+                    cur = _mm_slli_epi16(cur, 8);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    /* compute the product of *pa with the 4 low and 4 high bits of the high byte of values in b */
+                    datal = _mm_srli_epi16(datal, 8);
+                    datah = _mm_srli_epi16(datah, 8);
+                    
+                    cur = _mm_shuffle_epi8(tables[4], datal);
+                    cur = _mm_and_si128(cur, mask1);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[5], datal);
+                    cur = _mm_slli_epi16(cur, 8);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[6], datah);
+                    cur = _mm_and_si128(cur, mask1);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    cur = _mm_shuffle_epi8(tables[7], datah);
+                    cur = _mm_slli_epi16(cur, 8);
+                    acc = _mm_xor_si128(acc, cur);
+                    
+                    /* update the output matrix with the accumulator */
+                    cur = _mm_loadu_si128((__m128i*)pc);
+                    cur = _mm_xor_si128(cur, acc);
+                    _mm_storeu_si128((__m128i*)pc, cur);
+                }
+                
+                /* compute remaining columns */
+                for (; col < m; col++, pb++, pc++)
+                {
+                    *pc ^= gf_mul(*pa, *pb);
+                }
+            }
+        }
+    }
+}
+#endif /* (defined(__i386) || defined(__x86_64__)) && (GF_BITS > 8) */
+
+#if 0
+    memset(c, 0, m * n * sizeof(gf));
     for (row = 0; row < n ; row++)
     {
         for (i = 0; i < k; i++)
         {
-            const gf pa = a[ row * k + i ];
-            
-            if (pa != 0)
+            for (col = 0; col < m ; col++)
             {
-                /* pointer to the exp tables for pa */
-                const __m128i * tables = fast_gf_exp[pa];
-                
-                for (col = 0; col < (m & ~(SIMD_SIZE - 1)) ; col += (SIMD_SIZE / sizeof(gf)))
-                {
-                    /* load 8 gf */
-                    const __m128i data = _mm_loadu_si128((__m128i*)&b[ col + i * m ]);
-                    /* keep the 4 low bits of each byte */
-                    __m128i datal = _mm_and_si128(data, mask2);
-                    /* copy the 4 high bits of each byte from data to datah as low bits */
-                    __m128i datah = _mm_srli_epi16(_mm_andnot_si128(mask2, data), 4);
-                    
-                    /* clear result variable */
-                    __m128i tmp_acc = _mm_setzero_si128();
-                    __m128i cur;
-                    
-                    /* compute the 4 low bits of the low byte of the product */
-                    cur = _mm_shuffle_epi8(tables[0], datal);
-                    cur = _mm_and_si128(cur, mask1);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    /* compute the 4 low bits of the high byte of the product */
-                    cur = _mm_shuffle_epi8(tables[1], datal);
-                    cur = _mm_slli_epi16(cur, 8);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    /* compute something... */
-                    cur = _mm_shuffle_epi8(tables[2], datah);
-                    cur = _mm_and_si128(cur, mask1);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-                    cur = _mm_shuffle_epi8(tables[3], datah);
-                    cur = _mm_slli_epi16(cur, 8);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-                    
-                    datal = _mm_srli_epi16(datal, 8);
-                    datah = _mm_srli_epi16(datah, 8);
-                    
-                    
-                    cur = _mm_shuffle_epi8(tables[4], datal);
-                    cur = _mm_and_si128(cur, mask1);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-                    cur = _mm_shuffle_epi8(tables[5], datal);
-                    cur = _mm_slli_epi16(cur, 8);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-                    cur = _mm_shuffle_epi8(tables[6], datah);
-                    cur = _mm_and_si128(cur, mask1);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-                    cur = _mm_shuffle_epi8(tables[7], datah);
-                    cur = _mm_slli_epi16(cur, 8);
-                    tmp_acc = _mm_xor_si128(tmp_acc, cur);
-                    
-		    cur = _mm_loadu_si128((__m128i*)&c[ row * m + col ]);
-                    cur = _mm_xor_si128(cur, tmp_acc);
-		    _mm_storeu_si128((__m128i*)&c[ row * m + col ], cur);
-                }
-                for (; col < m ; col++)
-                {
-                    const gf pb = b[ col + i * m ];
-                    c[ row * m + col ] ^= gf_mul( pa, pb ) ;
-                }
+                c[row * m + col] ^= gf_mul(a[row * k + i], b[i * m + col]) ;
             }
-        }
-    }
-/* TODO: revoir le mode debug */
-#ifdef DEBUG
-    for (row = 0; row < n ; row++) {
-        for (col = 0; col < m ; col++) {
-            gf *pa = &a[ row * k ];
-            gf *pb = &b[ col ];
-            gf acc = 0 ;
-            for (i = 0; i < k ; i++, pa++, pb += m )
-            {
-                acc ^= gf_mul( *pa, *pb ) ;
-            }
-            if (c[ row * m + col ] != acc)
-                    printf("%d, %d: %hu %hu\n", row, col, acc, c[ row * m + col ]);
         }
     }
 #endif
+#if 0
+    memset(c, 0, m * n * sizeof(gf));
+    {
+        gf * pa = a, * pb = b, * pc = c;
+        for (row = 0; row < n ; row++)
+        {
+            pb = b;
+            for (i = 0; i < k; i++)
+            {
+                for (col = 0; col < m ; col++)
+                {
+                    *pc ^= gf_mul(*pa, *pb);
+                    pb++;
+                    pc++;
+                }
+                pa++;
+                pc -= m;
+            }
+            pc += m;
+        }
+    }
+#endif
+
+#endif /* USE_ORIGINAL_CODE */
+
+/* TODO: revoir le mode debug */
+#ifdef DEBUG
+/*
+ * check C = AB where A is n*k, B is k*m, C is n*m
+ */
+static void
+check_matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
+{
+    int row, col, i;
+    
+    for (row = 0; row < n ; row++)
+    {
+        for (col = 0; col < m ; col++)
+        {
+            gf *pa = &a[row * k];
+            gf *pb = &b[col];
+            gf acc = 0;
+            for (i = 0; i < k; i++, pa++, pb += m)
+            {
+                acc ^= gf_mul(*pa, *pb);
+            }
+            if (c[row * m + col] != acc)
+                    printf("%d, %d: %hu %hu\n", row, col, acc, c[row * m + col]);
+        }
+    }
 }
+#else
+#define check_matmul(...)
 #endif
 
 #ifdef DEBUG
@@ -614,7 +818,7 @@ invert_mat(gf *src, int k)
     gf *id_row = NEW_GF_MATRIX(1, k);
     gf *temp_row = NEW_GF_MATRIX(1, k);
 
-    bzero(id_row, k*sizeof(gf));
+    memset(id_row, 0, k*sizeof(gf));
     DEB( pivloops=0; pivswaps=0 ; /* diagnostic */ )
     /*
      * ipiv marks elements already used as pivots.
@@ -694,7 +898,7 @@ found_piv:
          * we can optimize the addmul).
          */
         id_row[icol] = 1;
-        if (bcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
+        if (memcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
             for (p = src, ix = 0 ; ix < k ; ix++, p += k ) {
                 if (ix != icol) {
                     c = p[icol] ;
@@ -722,8 +926,8 @@ fail:
     free(indxc);
     free(indxr);
     free(ipiv);
-    free(id_row);
-    free(temp_row);
+    DELETE_GF_MATRIX(id_row);
+    DELETE_GF_MATRIX(temp_row);
     return error ;
 }
 
@@ -789,9 +993,9 @@ invert_vdm(gf *src, int k)
         for (col = 0 ; col < k ; col++ )
             src[col*k + row] = gf_mul(inverse[t], b[col] );
     }
-    free(c) ;
-    free(b) ;
-    free(p) ;
+    DELETE_GF_MATRIX(c) ;
+    DELETE_GF_MATRIX(b) ;
+    DELETE_GF_MATRIX(p) ;
     return 0 ;
 }
 
@@ -832,7 +1036,7 @@ fec_free(struct fec_parms *p)
         fprintf(stderr, "bad parameters to fec_free\n");
         return ;
     }
-    free(p->enc_matrix);
+    DELETE_GF_MATRIX(p->enc_matrix);
     free(p);
 }
 
@@ -884,20 +1088,39 @@ fec_new(int k, int n)
 #if (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE)
     matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
 #else
-    /* TODO: remettre? */
-    /* precompute log values */
-    /*
-    for (row = 0; row < n; row++)
-        for (col = 0; col < k; col++)
-            tmp_m[row * k + col] = gf_log[tmp_m[row * k + col]];
-    */
-    matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+# if (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8)
+    if (1)
+    {
+        matmul_intrin_ssse3(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    }
+    else if (0)
+    {
+        matmul_vect_ext(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    }
+    else
+# endif /* (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8) */
+        /* precompute log values */
+    if (0)
+    {
+        for (row = 0; row < n; row++)
+            for (col = 0; col < k; col++)
+                if (tmp_m[row * k + col] != 0)
+                    tmp_m[row * k + col] = gf_log[tmp_m[row * k + col]];
+        matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    }
+    else
+    {
+        matmul_ref(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    }
 #endif /* (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE) */
-    free(tmp_m);
+    DELETE_GF_MATRIX(tmp_m);
     /*
      * the upper matrix is I so do not bother with a slow multiply
      */
-    bzero(retval->enc_matrix, k*k*sizeof(gf) );
+    memset(retval->enc_matrix, 0, k*k*sizeof(gf) );
     for (p = retval->enc_matrix, col = 0 ; col < k ; col++, p += k+1 )
         *p = 1 ;
     TOCK(ticks[3]);
@@ -924,10 +1147,10 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
 #endif
 
     if (index < k)
-         bcopy(src[index], fec, sz*sizeof(gf) ) ;
+         memcpy(fec, src[index], sz*sizeof(gf) ) ;
     else if (index < code->n) {
         p = &(code->enc_matrix[index*k] );
-        bzero(fec, sz*sizeof(gf));
+        memset(fec, 0, sz*sizeof(gf));
         for (i = 0; i < k ; i++)
             addmul(fec, src[i], p[i], sz ) ;
     } else
@@ -988,22 +1211,22 @@ build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
     for (i = 0, p = matrix ; i < k ; i++, p += k ) {
 #if 1 /* this is simply an optimization, not very useful indeed */
         if (index[i] < k) {
-            bzero(p, k*sizeof(gf) );
+            memset(p, 0, k*sizeof(gf) );
             p[i] = 1 ;
         } else
 #endif
         if (index[i] < code->n )
-            bcopy( &(code->enc_matrix[index[i]*k]), p, k*sizeof(gf) ); 
+            memcpy(p, &(code->enc_matrix[index[i]*k]), k*sizeof(gf)); 
         else {
             fprintf(stderr, "decode: invalid index %d (max %d)\n",
                 index[i], code->n - 1 );
-            free(matrix) ;
+            DELETE_GF_MATRIX(matrix) ;
             return NULL ;
         }
     }
     TICK(ticks[9]);
     if (invert_mat(matrix, k)) {
-        free(matrix);
+        DELETE_GF_MATRIX(matrix);
         matrix = NULL ;
     }
     TOCK(ticks[9]);
@@ -1045,7 +1268,7 @@ fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
     for (row = 0 ; row < k ; row++ ) {
         if (index[row] >= k) {
             new_pkt[row] = my_malloc (sz * sizeof (gf), "new pkt buffer" );
-            bzero(new_pkt[row], sz * sizeof(gf) ) ;
+            memset(new_pkt[row], 0, sz * sizeof(gf) ) ;
             for (col = 0 ; col < k ; col++ )
                 addmul(new_pkt[row], pkt[col], m_dec[row*k + col], sz) ;
         }
@@ -1055,12 +1278,12 @@ fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
      */
     for (row = 0 ; row < k ; row++ ) {
         if (index[row] >= k) {
-            bcopy(new_pkt[row], pkt[row], sz*sizeof(gf));
+            memcpy(pkt[row], new_pkt[row], sz*sizeof(gf));
             free(new_pkt[row]);
         }
     }
     free(new_pkt);
-    free(m_dec);
+    DELETE_GF_MATRIX(m_dec);
 
     return 0;
 }
