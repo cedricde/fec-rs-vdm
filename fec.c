@@ -147,8 +147,10 @@ static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
 #if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
+#endif /* __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7) */
 static __m128i fast_gf_exp[GF_SIZE + 1][8];
 #endif
 /*
@@ -512,7 +514,7 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
 }
 #endif /* (GF_BITS > 8) */
 
-#if (GF_BITS > 8)
+#if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) && (GF_BITS > 8)
 /*
  * computes C = AB where A is n*k, B is k*m, C is n*m
  * using vector extensions
@@ -599,7 +601,7 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#endif /* (GF_BITS > 8) */
+#endif /* (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) && (GF_BITS > 8) */
 
 #if (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8)
 /*
@@ -1094,12 +1096,15 @@ fec_new(int k, int n)
         matmul_intrin_ssse3(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
         check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
     }
-    else if (0)
+    else 
+#  if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7))
+    if (0)
     {
         matmul_vect_ext(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
         check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
     }
     else
+#  endif /* (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) */
 # endif /* (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8) */
         /* precompute log values */
     if (0)
