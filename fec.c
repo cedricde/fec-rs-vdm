@@ -32,6 +32,23 @@
  * OF SUCH DAMAGE.
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#ifdef SELFTEST
+#include <assert.h>
+#endif
+
+#if defined(ENABLE_SSE_INTRIN)
+#include <emmintrin.h>
+#include <tmmintrin.h>
+#include <mm_malloc.h>
+#elif defined(ENABLE_VECTOR_EXT)
+#include <mm_malloc.h>
+#endif
+
 /*
  * The following parameter defines how many bits are used for
  * field elements. The code supports any value from 2 to 16
@@ -42,13 +59,19 @@
 #define GF_BITS  16	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <xmmintrin.h>
-#include <tmmintrin.h>
-#include <mm_malloc.h>
+#if defined(ENABLE_SSE_INTRIN) && defined(ENABLE_VECTOR_EXT)
+#error "Cannot enable both SSE intrinsics and vector extensions code"
+#endif
+
+#if (GF_BITS <= 8) && (defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT))
+#error "SIMD codes require GF_BITS > 8"
+#endif
+
+#if defined(ENABLE_VECTOR_EXT)
+#if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 7)
+#error "Vector extensions code is not supported by the compiler."
+#endif
+#endif
 
 /*
  * stuff used for testing purposes only
@@ -92,7 +115,7 @@ u_long ticks[10];	/* vars for timekeeping */
  * faster on the Pentium. We use int whenever have to deal with an
  * index, since they are generally faster.
  */
-#if (GF_BITS < 2  && GF_BITS >16)
+#if (GF_BITS < 2) || (GF_BITS > 16)
 #error "GF_BITS must be 2 .. 16"
 #endif
 #if (GF_BITS <= 8)
@@ -146,13 +169,14 @@ static gf gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
 static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
-#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
-#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)
+#if defined(ENABLE_SSE_INTRIN)
+static __m128i fast_gf_exp[GF_SIZE+1][8];
+#elif defined(ENABLE_VECTOR_EXT)
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
-#endif /* __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7) */
-static __m128i fast_gf_exp[GF_SIZE + 1][8];
+static v16b fast_gf_exp[GF_SIZE+1][8];
 #endif
+
 /*
  * modnn(x) computes x % GF_SIZE, where GF_SIZE is 2**GF_BITS - 1,
  * without a slow divide.
@@ -205,15 +229,45 @@ gf_mul(gf x, gf y)
 {
     if (x == 0 || y == 0) return 0;
     
-    return gf_exp[(int)gf_log[x] + (int)gf_log[y] ] ;
+    return gf_exp[(int)gf_log[x] + (int)gf_log[y]] ;
 }
+
+#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
+static void init_mul_table()
+{
+    int i, j, v;
+    uint8_t tables[8][16];
+    
+    for (i = 0; i <= GF_SIZE; i++)
+    {
+        for (j = 0; j < 16; j++)
+        {
+            v = gf_mul(i, j);
+            tables[0][j] = v & 0xFF;
+            tables[1][j] = (v >> 8) & 0xFF;
+            v = gf_mul(i, j << 4);
+            tables[2][j] = v & 0xFF;
+            tables[3][j] = (v >> 8) & 0xFF;
+            v = gf_mul(i, j << 8);
+            tables[4][j] = v & 0xFF;
+            tables[5][j] = (v >> 8) & 0xFF;
+            v = gf_mul(i, j << 12);
+            tables[6][j] = v & 0xFF;
+            tables[7][j] = (v >> 8) & 0xFF;
+        }
+        memcpy(fast_gf_exp[i], tables, sizeof(tables));
+    }
+}
+#else
 #define init_mul_table()
+#endif
 
 #define USE_GF_MULC register gf * __gf_mulc_
 #define GF_MULC0(c) __gf_mulc_ = &gf_exp[ gf_log[c] ]
 #define GF_ADDMULC(dst, x) { if (x) dst ^= __gf_mulc_[ gf_log[x] ] ; }
 #endif
 
+#ifdef SELFTEST
 /* Reference implementation of multiplication in Galois Field */
 static gf gf_mul_ref(gf x, gf y)
 {
@@ -238,6 +292,7 @@ static inline gf gf_add_ref(gf x, gf y)
 {
     return x ^ y;
 }
+#endif /* SELFTEST */
 
 /*
  * Generate GF(2**m) from the irreducible polynomial p(X) in p[0]..p[m]
@@ -265,7 +320,7 @@ my_malloc(size_t sz, const char *err_string)
     return p ;
 }
 
-#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
+#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
 static void *
 my_aligned_malloc(size_t sz, const char *err_string)
 {
@@ -353,38 +408,6 @@ generate_gf(void)
     inverse[1] = 1;
     for (i=2; i<=GF_SIZE; i++)
         inverse[i] = gf_exp[GF_SIZE-gf_log[i]];
-#if (GF_BITS > 8) && !defined(USE_ORIGINAL_CODE)
-    /*
-     * TODO: refactor, optimiser et voir s'il faut aller à GF_SIZE * 2
-     */
-    for (i = 0; i <= GF_SIZE; i++) {
-        int j;
-        unsigned char value[8][16] __attribute__ ((aligned (16)));
-        
-        for (j = 0; j < 16; j++) {
-            mask = gf_mul(i, j);
-            value[0][j] = mask & 0xFF;
-            value[1][j] = (mask >> 8) & 0xFF;
-            mask = gf_mul(i, j << 4);
-            value[2][j] = mask & 0xFF;
-            value[3][j] = (mask >> 8) & 0xFF;
-            mask = gf_mul(i, j << 8);
-            value[4][j] = mask & 0xFF;
-            value[5][j] = (mask >> 8) & 0xFF;
-            mask = gf_mul(i, j << 12);
-            value[6][j] = mask & 0xFF;
-            value[7][j] = (mask >> 8) & 0xFF;
-        }
-        fast_gf_exp[i][0] = _mm_load_si128((__m128i*)value[0]);
-        fast_gf_exp[i][1] = _mm_load_si128((__m128i*)value[1]);
-        fast_gf_exp[i][2] = _mm_load_si128((__m128i*)value[2]);
-        fast_gf_exp[i][3] = _mm_load_si128((__m128i*)value[3]);
-        fast_gf_exp[i][4] = _mm_load_si128((__m128i*)value[4]);
-        fast_gf_exp[i][5] = _mm_load_si128((__m128i*)value[5]);
-        fast_gf_exp[i][6] = _mm_load_si128((__m128i*)value[6]);
-        fast_gf_exp[i][7] = _mm_load_si128((__m128i*)value[7]);
-    }
-#endif
 }
 
 /*
@@ -463,31 +486,31 @@ matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
     }
 }
 
-#ifndef USE_ORIGINAL_CODE
+#ifdef SELFTEST
 /*
- * computes C = AB where A is n*k, B is k*m, C is n*m
- * using reference functions
+ * check result of matmul() using reference functions
  */
 static void
-matmul_ref(const gf *a, const gf *b, gf *c, int n, int k, int m)
+check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m)
 {
-    int row, col, i ;
+    int row, col, i;
 
-    for (row = 0; row < n ; row++)
+    for (row = 0; row < n; row++)
     {
-        for (col = 0; col < m ; col++)
+        for (col = 0; col < m; col++)
         {
-            const gf *pa = &a[row * k];
-            const gf *pb = &b[col];
-            gf acc = 0 ;
-            for (i = 0; i < k; i++, pa++, pb += m )
-                acc ^= gf_mul_ref(*pa, *pb);
-            c[row * m + col] = acc;
+            gf acc = 0;
+            for (i = 0; i < k; i++)
+                acc ^= gf_mul_ref(a[row * k + i], b[i * m + col]);
+            assert(c[row * m + col] == acc);
         }
     }
 }
+#else
+#define check_matmul(...)
+#endif /* SELFTEST */
 
-#if (GF_BITS > 8)
+#if 0
 /*
  * does the same as matmul() but A and B are assumed to store log values
  */
@@ -512,40 +535,39 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#endif /* (GF_BITS > 8) */
+#endif
 
-#if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) && (GF_BITS > 8)
+#if defined(ENABLE_VECTOR_EXT)
 /*
- * computes C = AB where A is n*k, B is k*m, C is n*m
- * using vector extensions
+ * matmul() using vector extensions
  */
 static void
-matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_simd(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
+    const gf * pa, * pb;
     int row, col, i ;
+    
+    const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
+    const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
+    
     
     /* clear output matrix */
     memset(c, 0, m * n * sizeof(gf));
     
-    /* mask of 16 bits values set to 0xFF */
-    const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
-    /* mask of 8 bits values set to 0xF */
-    const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
-    
     /* pointer to the cell in a (pa = &a[row * k + i]) */
-    const gf * pa = a;
+    pa = a;
     
     for (row = 0; row < n ; row++)
     {
         /* pointer to the cell in b (pb = &b[i * m + col]) */
-        const gf * pb = b;
+        pb = b;
         
         for (i = 0; i < k; i++, pa++)
         {
             if (*pa != 0)
             {
                 /* pointer to the exp tables for *pa */
-                const v16b * tables = (const v16b *)fast_gf_exp[*pa];
+                const v16b * mul_tables = fast_gf_exp[*pa];
                 
                 /* pointer to the output cell in c (pc = &c[row * m + col]) */
                 gf * pc = &c[row * m];
@@ -557,12 +579,11 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 }
                 
                 /* compute 8 columns at a time */
-                for (; col < (m - 8) ; col += 8, pb += 8, pc += 8)
+                for (; col <= (m - 8) ; col += 8, pb += 8, pc += 8)
                 {
-                    /* accumulator and working variables */
                     v8gf acc;
                     
-                    /* load 8 columns */
+                    /* pointer to the next 8 columns */
                     const v8gf * data = (const v8gf*)pb;
                     
                     /* get the 4 low bits of each byte */
@@ -574,19 +595,19 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
                     memcpy(&acc, pc, sizeof(acc));
                     
                     /* compute the product of *pa with the 4 low and 4 high bits of the low byte of values in b */
-                    acc ^= (v8gf)__builtin_shuffle(tables[0], (v16b)datal) & mask1;
-                    acc ^= (v8gf)__builtin_shuffle(tables[1], (v16b)datal) << 8;
-                    acc ^= (v8gf)__builtin_shuffle(tables[2], (v16b)datah) & mask1;
-                    acc ^= (v8gf)__builtin_shuffle(tables[3], (v16b)datah) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[0], (v16b)datal) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[1], (v16b)datal) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[2], (v16b)datah) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[3], (v16b)datah) << 8;
                     
                     /* compute the product of *pa with the 4 low and 4 high bits of the high byte of values in b */
                     datal >>= 8;
                     datah >>= 8;
                     
-                    acc ^= (v8gf)__builtin_shuffle(tables[4], (v16b)datal) & mask1;
-                    acc ^= (v8gf)__builtin_shuffle(tables[5], (v16b)datal) << 8;
-                    acc ^= (v8gf)__builtin_shuffle(tables[6], (v16b)datah) & mask1;
-                    acc ^= (v8gf)__builtin_shuffle(tables[7], (v16b)datah) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[4], (v16b)datal) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[5], (v16b)datal) << 8;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[6], (v16b)datah) & mask1;
+                    acc ^= (v8gf)__builtin_shuffle(mul_tables[7], (v16b)datah) << 8;
                     
                     /* update the output matrix with the accumulator */
                     memcpy(pc, &acc, sizeof(acc));
@@ -601,33 +622,32 @@ matmul_vect_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#endif /* (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) && (GF_BITS > 8) */
-
-#if (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8)
+#elif defined(ENABLE_SSE_INTRIN)
 /*
- * computes C = AB where A is n*k, B is k*m, C is n*m
- * using intrinsics requiring SSSE3
+ * matmul() using SSE2 and SSSE3 intrinsics
  */
 static void 
-matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_simd(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
+    const gf * pa, * pb;
     int row, col, i ;
-    
-    /* clear output matrix */
-    memset(c, 0, m * n * sizeof(gf));
     
     /* mask of 16 bits values set to 0xFF */
     const __m128i mask1 = _mm_set1_epi16(0x00FF);
     /* mask of 8 bits values set to 0xF */
     const __m128i mask2 = _mm_set1_epi8(0x0F);
     
+    
+    /* clear output matrix */
+    memset(c, 0, m * n * sizeof(gf));
+    
     /* pointer to the cell in a (pa = &a[row * k + i]) */
-    const gf * pa = a;
+    pa = a;
     
     for (row = 0; row < n ; row++)
     {
         /* pointer to the cell in b (pb = &b[i * m + col]) */
-        const gf * pb = b;
+        pb = b;
         
         for (i = 0; i < k; i++, pa++)
         {
@@ -646,12 +666,12 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
                 }
                 
                 /* compute 8 columns at a time */
-                for (; col < (m - 8) ; col += 8, pb += 8, pc += 8)
+                for (; col <= (m - 8) ; col += 8, pb += 8, pc += 8)
                 {
                     /* accumulator and working variables */
                     __m128i acc, cur;
                     
-                    /* load 8 columns */
+                    /* load the next 8 columns */
                     const __m128i data = _mm_load_si128((__m128i*)pb);
                     
                     /* get the 4 low bits of each byte */
@@ -710,7 +730,7 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#endif /* (defined(__i386) || defined(__x86_64__)) && (GF_BITS > 8) */
+#endif /* defined(ENABLE_SSE_INTRIN) */
 
 #if 0
     memset(c, 0, m * n * sizeof(gf));
@@ -746,38 +766,6 @@ matmul_intrin_ssse3(const gf *a, const gf *b, gf *c, int n, int k, int m)
             pc += m;
         }
     }
-#endif
-
-#endif /* USE_ORIGINAL_CODE */
-
-/* TODO: revoir le mode debug */
-#ifdef DEBUG
-/*
- * check C = AB where A is n*k, B is k*m, C is n*m
- */
-static void
-check_matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
-{
-    int row, col, i;
-    
-    for (row = 0; row < n ; row++)
-    {
-        for (col = 0; col < m ; col++)
-        {
-            gf *pa = &a[row * k];
-            gf *pb = &b[col];
-            gf acc = 0;
-            for (i = 0; i < k; i++, pa++, pb += m)
-            {
-                acc ^= gf_mul(*pa, *pb);
-            }
-            if (c[row * m + col] != acc)
-                    printf("%d, %d: %hu %hu\n", row, col, acc, c[row * m + col]);
-        }
-    }
-}
-#else
-#define check_matmul(...)
 #endif
 
 #ifdef DEBUG
@@ -1013,7 +1001,7 @@ init_fec()
     init_mul_table();
     TOCK(ticks[0]);
     DDB(fprintf(stderr, "init_mul_table took %ldus\n", ticks[0]);)
-    fec_initialized = 1 ;
+    fec_initialized = 1;
 }
 
 /*
@@ -1087,40 +1075,23 @@ fec_new(int k, int n)
      */
     TICK(ticks[3]);
     invert_vdm(tmp_m, k); /* much faster than invert_mat */
-#if (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE)
-    matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
+    matmul_simd(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
 #else
-# if (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8)
-    if (1)
-    {
-        matmul_intrin_ssse3(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-    }
-    else 
-#  if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7))
-    if (0)
-    {
-        matmul_vect_ext(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-    }
-    else
-#  endif /* (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) */
-# endif /* (defined(__i386__) || defined(__x86_64__)) && (GF_BITS > 8) */
-        /* precompute log values */
-    if (0)
-    {
-        for (row = 0; row < n; row++)
-            for (col = 0; col < k; col++)
-                if (tmp_m[row * k + col] != 0)
-                    tmp_m[row * k + col] = gf_log[tmp_m[row * k + col]];
-        matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-    }
-    else
-    {
-        matmul_ref(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-        check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-    }
-#endif /* (GF_BITS <= 8) || defined(USE_ORIGINAL_CODE) */
+    matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+#endif
+    
+    check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    
+#if 0
+    /* precompute log values */
+    for (row = 0; row < n; row++)
+        for (col = 0; col < k; col++)
+            if (tmp_m[row * k + col] != 0)
+                tmp_m[row * k + col] = gf_log[tmp_m[row * k + col]];
+    matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+#endif
+    
     DELETE_GF_MATRIX(tmp_m);
     /*
      * the upper matrix is I so do not bother with a slow multiply
