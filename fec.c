@@ -95,7 +95,7 @@
 	  if (t1 < t) t = 256000000 + t1 - t ; \
 	  else t = t1 - t ; \
 	  if (t == 0) t = 1 ;}
-	
+
 u_long ticks[10];	/* vars for timekeeping */
 #else
 #define DEB(x)
@@ -176,6 +176,17 @@ typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
 static v16b fast_gf_exp[GF_SIZE+1][8];
 #endif
+
+
+#ifdef SELFTEST
+/* Declarations of test functions */
+static gf gf_mul_ref(gf x, gf y);
+static void check_gf();
+static void check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m);
+#else
+#define check_gf()
+#define check_matmul(...)
+#endif /* SELFTEST */
 
 /*
  * modnn(x) computes x % GF_SIZE, where GF_SIZE is 2**GF_BITS - 1,
@@ -267,32 +278,6 @@ static void init_mul_table()
 #define GF_ADDMULC(dst, x) { if (x) dst ^= __gf_mulc_[ gf_log[x] ] ; }
 #endif
 
-#ifdef SELFTEST
-/* Reference implementation of multiplication in Galois Field */
-static gf gf_mul_ref(gf x, gf y)
-{
-    int a = x, b = y, r = 0;
-    int i;
-    
-    for (i = 0; i < GF_BITS; i++)
-    {
-        if (b & 1)
-            r ^= a;
-        a <<= 1;
-        if (a & (1 << GF_BITS))
-            a ^= allPp[GF_BITS].number;
-        b >>= 1;
-    }
-    
-    return r;
-}
-
-/* Reference implementation of addition in Galois Field */
-static inline gf gf_add_ref(gf x, gf y)
-{
-    return x ^ y;
-}
-#endif /* SELFTEST */
 
 /*
  * Generate GF(2**m) from the irreducible polynomial p(X) in p[0]..p[m]
@@ -485,30 +470,6 @@ matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-
-#ifdef SELFTEST
-/*
- * check result of matmul() using reference functions
- */
-static void
-check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m)
-{
-    int row, col, i;
-
-    for (row = 0; row < n; row++)
-    {
-        for (col = 0; col < m; col++)
-        {
-            gf acc = 0;
-            for (i = 0; i < k; i++)
-                acc ^= gf_mul_ref(a[row * k + i], b[i * m + col]);
-            assert(c[row * m + col] == acc);
-        }
-    }
-}
-#else
-#define check_matmul(...)
-#endif /* SELFTEST */
 
 #if 0
 /*
@@ -997,6 +958,7 @@ init_fec()
     generate_gf();
     TOCK(ticks[0]);
     DDB(fprintf(stderr, "generate_gf took %ldus\n", ticks[0]);)
+    check_gf();
     TICK(ticks[0]);
     init_mul_table();
     TOCK(ticks[0]);
@@ -1081,8 +1043,6 @@ fec_new(int k, int n)
     matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
 #endif
     
-    check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-    
 #if 0
     /* precompute log values */
     for (row = 0; row < n; row++)
@@ -1092,7 +1052,6 @@ fec_new(int k, int n)
     matmul_log(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
 #endif
     
-    DELETE_GF_MATRIX(tmp_m);
     /*
      * the upper matrix is I so do not bother with a slow multiply
      */
@@ -1101,6 +1060,10 @@ fec_new(int k, int n)
         *p = 1 ;
     TOCK(ticks[3]);
 
+    check_matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
+    
+    DELETE_GF_MATRIX(tmp_m);
+    
     DDB(fprintf(stderr, "--- %ld us to build encoding matrix\n",
             ticks[3]);)
     DEB(pr_matrix(retval->enc_matrix, n, k, "encoding_matrix");)
@@ -1289,3 +1252,66 @@ test_gf()
     }
 }
 #endif /* TEST */
+
+#ifdef SELFTEST
+/* Reference implementation of multiplication in Galois Field */
+gf gf_mul_ref(gf x, gf y)
+{
+    int a = x, b = y, r = 0;
+    int i;
+    
+    for (i = 0; i < GF_BITS; i++)
+    {
+        if (b & 1)
+            r ^= a;
+        a <<= 1;
+        if (a & (1 << GF_BITS))
+            a ^= allPp[GF_BITS].number;
+        b >>= 1;
+    }
+    
+    return r;
+}
+
+/* check tables and multiplications for Galois Field computations */
+void check_gf()
+{
+    int i, j;
+    
+    for (i = 0; i <= GF_SIZE; i++)
+    {
+        if (i != 0)
+        {
+            assert(gf_exp[gf_log[i]] == i);
+            assert(gf_mul(i, inverse[i]) == 1);
+        }
+        
+        assert(gf_log[gf_exp[i]] == i);
+        
+        assert(gf_mul(i,0) == 0);
+        assert(gf_mul(0,i) == 0);
+        
+        for (j = 0; j <= GF_SIZE; j++)
+        {
+            assert(gf_mul(i, j) == gf_mul_ref(i, j));
+        }
+    }
+}
+
+/* check result of matmul() using reference functions */
+void check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m)
+{
+    int row, col, i;
+
+    for (row = 0; row < n; row++)
+    {
+        for (col = 0; col < m; col++)
+        {
+            gf acc = 0;
+            for (i = 0; i < k; i++)
+                acc ^= gf_mul_ref(a[row * k + i], b[i * m + col]);
+            assert(c[row * m + col] == acc);
+        }
+    }
+}
+#endif /* SELFTEST */
