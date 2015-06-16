@@ -13,4 +13,4 @@ matrix:
     - compiler: clang
       env: GF_MODE=VECTOR_EXT
 
-script: make CPPFLAGS="-DGF_BITS=16 -DENABLE_$GF_MODE -DSELFTEST" && make test
+script: make CPPFLAGS="-DGF_BITS=16 -DENABLE_$GF_MODE" && make test
