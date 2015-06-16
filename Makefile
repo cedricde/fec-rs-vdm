@@ -18,6 +18,9 @@ fec: fec.o test.o
 fec.o: fec.c fec.h
 test.o: test.c fec.h
 
-.PHONY: clean
+.PHONY: clean test
 clean:
 	$(RM) core *.o fec
+
+test:
+	@./fec
