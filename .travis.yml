@@ -2,4 +2,15 @@ language: c
 compiler:
   - gcc
   - clang
-script: make && ./fec
+
+env:
+  - GF_MODE=NORMAL
+  - GF_MODE=SSE_INTRIN
+  - GF_MODE=VECTOR_EXT
+
+matrix:
+  exclude:
+    - compiler: clang
+      env: GF_MODE=VECTOR_EXT
+
+script: make CPPFLAGS="-DGF_BITS=16 -DENABLE_$GF_MODE -DSELFTEST" && make test
