@@ -1286,8 +1286,6 @@ void check_gf()
             assert(gf_mul(i, inverse[i]) == 1);
         }
         
-        assert(gf_log[gf_exp[i]] == i);
-        
         assert(gf_mul(i,0) == 0);
         assert(gf_mul(0,i) == 0);
         
