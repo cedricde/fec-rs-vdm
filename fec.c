@@ -63,6 +63,10 @@
 #error "Cannot enable both SSE intrinsics and vector extensions code"
 #endif
 
+#if defined(ENABLE_SSE_INTRIN) && !defined(__i386__) && !defined(__x86_64__)
+#error "SSE intrinsics are for x86 and x86_64 CPU only"
+#endif
+
 #if (GF_BITS <= 8) && (defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT))
 #error "SIMD codes require GF_BITS > 8"
 #endif
@@ -169,12 +173,31 @@ static gf gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
 static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
+
 #if defined(ENABLE_SSE_INTRIN)
+
 static __m128i fast_gf_exp[GF_SIZE+1][8];
+
+/* function to check for needed CPU features */
+inline static int is_simd_supported();
+
+#define matmul(a, b, c, n, k, m) \
+    if (is_simd_supported()) matmul_sse_intrin(a, b, c, n, k, m); \
+    else matmul_original(a, b, c, n, k, m);
+
 #elif defined(ENABLE_VECTOR_EXT)
+
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
+
 static v16b fast_gf_exp[GF_SIZE+1][8];
+
+#define matmul(a, b, c, n, k, m) matmul_vector_ext(a, b, c, n, k, m)
+
+#else
+
+#define matmul(a, b, c, n, k, m) matmul_original(a, b, c, n, k, m)
+
 #endif
 
 
@@ -455,7 +478,7 @@ addmul1(gf *dst1, const gf *src1, gf c, int sz)
  * computes C = AB where A is n*k, B is k*m, C is n*m
  */
 static void
-matmul(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     int row, col, i ;
 
@@ -503,7 +526,7 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
  * matmul() using vector extensions
  */
 static void
-matmul_simd(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     const gf * pa, * pb;
     int row, col, i ;
@@ -584,11 +607,22 @@ matmul_simd(const gf *a, const gf *b, gf *c, int n, int k, int m)
     }
 }
 #elif defined(ENABLE_SSE_INTRIN)
+int is_simd_supported()
+{
+    unsigned int a, b, c, d;
+    
+    __asm__("cpuid\n\t"
+            : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+            : "0" (1));
+    
+    return ((d & (1 << 26)) != 0) && ((c & (1 << 9)) != 0);
+}
+
 /*
  * matmul() using SSE2 and SSSE3 intrinsics
  */
 static void 
-matmul_simd(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     const gf * pa, * pb;
     int row, col, i ;
@@ -1037,11 +1071,7 @@ fec_new(int k, int n)
      */
     TICK(ticks[3]);
     invert_vdm(tmp_m, k); /* much faster than invert_mat */
-#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
-    matmul_simd(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-#else
     matmul(tmp_m + k*k, tmp_m, retval->enc_matrix + k*k, n - k, k, k);
-#endif
     
 #if 0
     /* precompute log values */
