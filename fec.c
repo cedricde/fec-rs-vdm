@@ -1052,6 +1052,7 @@ fec_new(int k, int n)
     retval->enc_matrix = NEW_GF_MATRIX(n, k);
     retval->magic = ( ( FEC_MAGIC ^ k) ^ n) ^ (int)(retval->enc_matrix) ;
     tmp_m = NEW_GF_MATRIX(n, k);
+#if 1
     /*
      * fill the matrix with powers of field elements, starting from 0.
      * The first row is special, cannot be computed with exp. table.
@@ -1063,6 +1064,19 @@ fec_new(int k, int n)
         for ( col = 0 ; col < k ; col ++ )
             p[col] = gf_exp[modnn(row*col)];
     }
+#else
+    /*
+     * fill the matrix as described in Technical Report UT-CS-03-504
+     * by James S. Plank, University of Tennessee
+     * http://web.eecs.utk.edu/~plank/plank/papers/CS-03-504.pdf
+     */
+    tmp_m[0] = 1 ;
+    for (col = 1; col < k; col++)
+        tmp_m[col] = 0;
+    for (p = tmp_m + k, row = 1; row < n; row++, p += k)
+        for (col = 0; col < k; col ++)
+            p[col] = gf_exp[modnn((int)gf_log[row]*col)];
+#endif
 
     /*
      * quick code to build systematic matrix: invert the top
