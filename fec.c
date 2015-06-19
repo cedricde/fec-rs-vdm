@@ -483,6 +483,7 @@ matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     int row, col, i ;
 
+#pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++) {
         for (col = 0; col < m ; col++) {
             const gf *pa = &a[ row * k ];
@@ -504,6 +505,7 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
     int row, col, i ;
 
+#pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++)
     {
         for (col = 0; col < m ; col++)
@@ -542,6 +544,7 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* pointer to the cell in a (pa = &a[row * k + i]) */
     pa = a;
     
+#pragma omp parallel for firstprivate(pa) private(row, col, i, pb)
     for (row = 0; row < n ; row++)
     {
         /* pointer to the cell in b (pb = &b[i * m + col]) */
@@ -640,6 +643,7 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* pointer to the cell in a (pa = &a[row * k + i]) */
     pa = a;
     
+#pragma omp parallel for firstprivate(pa) private(row, col, i, pb)
     for (row = 0; row < n ; row++)
     {
         /* pointer to the cell in b (pb = &b[i * m + col]) */

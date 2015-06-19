@@ -4,9 +4,14 @@ compiler:
   - clang
 
 env:
-  - GF_MODE=NORMAL
-  - GF_MODE=SSE_INTRIN
-  - GF_MODE=VECTOR_EXT
+  global:
+    - OMP_NUM_THREADS=4
+    - EXTRA_CFLAGS=-fopenmp
+    - EXTRA_LDFLAGS=-fopenmp
+  matrix:
+    - GF_MODE=NORMAL
+    - GF_MODE=SSE_INTRIN
+    - GF_MODE=VECTOR_EXT
 
 matrix:
   exclude:
