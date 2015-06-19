@@ -217,7 +217,7 @@ static void check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, in
  * without a slow divide.
  */
 static inline gf
-modnn(int x)
+modnn(uint_fast32_t x)
 {
     while (x >= GF_SIZE) {
         x -= GF_SIZE;
@@ -253,7 +253,7 @@ init_mul_table()
     int i, j;
     for (i=0; i< GF_SIZE+1; i++)
         for (j=0; j< GF_SIZE+1; j++)
-            gf_mul_table[i][j] = gf_exp[modnn((int)gf_log[i] + (int)gf_log[j]) ] ;
+            gf_mul_table[i][j] = gf_exp[modnn((uint_fast32_t)gf_log[i] + (uint_fast32_t)gf_log[j]) ] ;
 
     for (j=0; j< GF_SIZE+1; j++)
             gf_mul_table[0][j] = gf_mul_table[j][0] = 0;
@@ -264,7 +264,7 @@ gf_mul(gf x, gf y)
 {
     if (x == 0 || y == 0) return 0;
     
-    return gf_exp[(int)gf_log[x] + (int)gf_log[y]] ;
+    return gf_exp[(uint_fast32_t)gf_log[x] + (uint_fast32_t)gf_log[y]] ;
 }
 
 #if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
@@ -514,7 +514,7 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
             for (i = 0; i < k ; i++, pa++, pb += m )
             {
                 if (*pa != 0 && *pb != 0)
-                    acc ^= gf_exp[(int)*pa + (int)*pb];
+                    acc ^= gf_exp[(uint_fast32_t)*pa + (uint_fast32_t)*pb];
             }
             c[row * m + col] = acc;
         }
@@ -1068,7 +1068,7 @@ fec_new(int k, int n)
         tmp_m[col] = 0 ;
     for (p = tmp_m + k, row = 0; row < n-1 ; row++, p += k) {
         for ( col = 0 ; col < k ; col ++ )
-            p[col] = gf_exp[modnn(row*col)];
+            p[col] = gf_exp[modnn((uint_fast32_t)row*(uint_fast32_t)col)];
     }
 #else
     /*
@@ -1081,7 +1081,7 @@ fec_new(int k, int n)
         tmp_m[col] = 0;
     for (p = tmp_m + k, row = 1; row < n; row++, p += k)
         for (col = 0; col < k; col ++)
-            p[col] = gf_exp[modnn((int)gf_log[row]*col)];
+            p[col] = gf_exp[modnn((uint_fast32_t)gf_log[row]*(uint_fast32_t)col)];
 #endif
 
     /*
