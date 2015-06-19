@@ -8,8 +8,8 @@
 #  - Enabling AVX on GCC makes some SSE intrinsics use AVX instructions.
 #  - SIMD code is not available with GF_BITS <= 8.
 CPPFLAGS = -DGF_BITS=16 -DENABLE_SSE_INTRIN  # -DTEST
-CFLAGS = -Wall -O2 -g -msse -msse2 -msse3 -mssse3
-LDFLAGS = -g
+CFLAGS = -Wall -O2 -g -msse -msse2 -msse3 -mssse3 -pthread
+LDFLAGS = -g -pthread
 
 
 all: fec

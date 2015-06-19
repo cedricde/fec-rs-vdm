@@ -46,11 +46,16 @@
 
 #define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
 
-extern void fec_free(void *p);
-extern void * fec_new(int k, int n);
 
-extern void init_fec();
-extern void fec_encode(void *code, const void *src[], void *dst, int index, int sz);
-extern int fec_decode(void *code, void *pkt[], int index[], int sz);
+typedef struct fec_parms * fec_t;
+
+
+extern int fec_init();
+
+extern fec_t fec_new(int k, int n);
+extern void fec_free(fec_t code);
+
+extern void fec_encode(fec_t code, const void *src[], void *dst, int index, int sz);
+extern int fec_decode(fec_t code, void *pkt[], int index[], int sz);
 
 #endif /* _FEC_H */

@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #ifdef SELFTEST
 #include <assert.h>
@@ -984,7 +985,6 @@ invert_vdm(gf *src, int k)
     return 0 ;
 }
 
-static int fec_initialized = 0 ;
 static void
 init_fec()
 {
@@ -997,7 +997,13 @@ init_fec()
     init_mul_table();
     TOCK(ticks[0]);
     DDB(fprintf(stderr, "init_mul_table took %ldus\n", ticks[0]);)
-    fec_initialized = 1;
+}
+
+int fec_init()
+{
+    static pthread_once_t fec_initialized = PTHREAD_ONCE_INIT;
+
+    return (pthread_once(&fec_initialized, init_fec) == 0);
 }
 
 /*
@@ -1038,8 +1044,8 @@ fec_new(int k, int n)
 
     struct fec_parms *retval ;
 
-    if (fec_initialized == 0)
-        init_fec();
+    if (!fec_init())
+        return NULL;
 
     if (k > GF_SIZE + 1 || n > GF_SIZE + 1 || k > n ) {
         fprintf(stderr, "Invalid parameters k %d n %d GF_SIZE %d\n",
