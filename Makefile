@@ -28,6 +28,9 @@ ifeq ($(OPENMP), 1)
 	CFLAGS += -fopenmp
 	LDFLAGS += -fopenmp
 endif
+ifeq ($(SELFTEST), 1)
+	CPPFLAGS += -DSELFTEST
+endif
 
 
 all: fec

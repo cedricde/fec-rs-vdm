@@ -181,16 +181,18 @@ static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
 
+static void matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m);
+
 #if CODE == SSE_INTRINSICS
 
 static __m128i fast_gf_exp[GF_SIZE+1][8];
 
+static void matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m);
+
 /* function to check for needed CPU features */
 inline static int is_simd_supported();
 
-#define matmul(a, b, c, n, k, m) \
-    if (is_simd_supported()) matmul_sse_intrin(a, b, c, n, k, m); \
-    else matmul_original(a, b, c, n, k, m);
+static void (*matmul)(const gf *a, const gf *b, gf *c, int n, int k, int m) = matmul_original;
 
 #elif CODE == VECTOR_EXTENSIONS
 
@@ -198,6 +200,8 @@ typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
 
 static v16b fast_gf_exp[GF_SIZE+1][8];
+
+static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m);
 
 #define matmul(a, b, c, n, k, m) matmul_vector_ext(a, b, c, n, k, m)
 
@@ -537,7 +541,6 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
 static void
 matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
-    const gf * pa, * pb;
     int row, col, i ;
     
     const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
@@ -547,14 +550,14 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* clear output matrix */
     memset(c, 0, m * n * sizeof(gf));
     
-    /* pointer to the cell in a (pa = &a[row * k + i]) */
-    pa = a;
-    
-#pragma omp parallel for firstprivate(pa) private(row, col, i, pb)
+#pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++)
     {
+        /* pointer to the cell in a (pa = &a[row * k + i]) */
+        const gf * pa = &a[row * k];
+        
         /* pointer to the cell in b (pb = &b[i * m + col]) */
-        pb = b;
+        const gf * pb = b;
         
         for (i = 0; i < k; i++, pa++)
         {
@@ -634,7 +637,6 @@ int is_simd_supported()
 static void 
 matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
 {
-    const gf * pa, * pb;
     int row, col, i ;
     
     /* mask of 16 bits values set to 0xFF */
@@ -646,14 +648,14 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
     /* clear output matrix */
     memset(c, 0, m * n * sizeof(gf));
     
-    /* pointer to the cell in a (pa = &a[row * k + i]) */
-    pa = a;
-    
-#pragma omp parallel for firstprivate(pa) private(row, col, i, pb)
+#pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++)
     {
+        /* pointer to the cell in a (pa = &a[row * k + i]) */
+        const gf * pa = &a[row * k];
+        
         /* pointer to the cell in b (pb = &b[i * m + col]) */
-        pb = b;
+        const gf * pb = b;
         
         for (i = 0; i < k; i++, pa++)
         {
@@ -971,6 +973,11 @@ init_fec()
     init_mul_table();
     TOCK(ticks[0]);
     DDB(fprintf(stderr, "init_mul_table took %ldus\n", ticks[0]);)
+#if CODE == SSE_INTRINSICS
+    /* enable SSE code if supported by the CPU */
+    if (is_simd_supported())
+        matmul = matmul_sse_intrin;
+#endif
 }
 
 int fec_init()
