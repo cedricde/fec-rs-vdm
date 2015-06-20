@@ -186,23 +186,35 @@ static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 
 #if CODE == SSE_INTRINSICS
 static __m128i fast_gf_exp[GF_SIZE+1][8];
+/* mask of 16 bits values set to 0xFF */
+static __m128i mask1;
+/* mask of 8 bits values set to 0xF */
+static __m128i mask2;
 #elif CODE == VECTOR_EXTENSIONS
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
 static v16b fast_gf_exp[GF_SIZE+1][8];
+static const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
+static const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
 #endif
 
 static void matmul_original(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+static void addmul1_original(gf *dst, const gf *src, gf c, uint_fast32_t sz);
 #if CODE == SSE_INTRINSICS
 static void matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+static void addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz);
 static void (*matmul)(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m) = matmul_original;
+static void (*addmul1)(gf *dst, const gf *src, gf c, uint_fast32_t sz) = addmul1_original;
 /* function to check for needed CPU features */
 static int is_simd_supported();
 #elif CODE == VECTOR_EXTENSIONS
 static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+static void addmul1_vector_ext(gf *dst, const gf *src, gf c, uint_fast32_t sz);
 #define matmul(a, b, c, n, k, m) matmul_vector_ext(a, b, c, n, k, m)
+#define addmul1(dst, src, c, sz) addmul1_vector_ext(dst, src, c, sz)
 #else
 #define matmul(a, b, c, n, k, m) matmul_original(a, b, c, n, k, m)
+#define addmul1(dst, src, c, sz) addmul1_original(dst, src, c, sz)
 #endif
 
 
@@ -211,9 +223,11 @@ static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, i
 static gf gf_mul_ref(gf x, gf y);
 static void check_gf();
 static void check_matmul(const gf *a, const gf *b, const gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+static void check_alladdmul(const gf* dst, const gf **src, const gf *enc, int_fast32_t index, int_fast32_t k, uint_fast32_t sz);
 #else
 #define check_gf()
 #define check_matmul(...)
+#define check_alladdmul(...)
 #endif /* SELFTEST */
 
 /*
@@ -441,7 +455,7 @@ generate_gf(void)
 
 #define UNROLL 16 /* 1, 4, 8, 16 */
 static void
-addmul1(gf *dst, const gf *src, gf c, uint_fast32_t sz)
+addmul1_original(gf *dst, const gf *src, gf c, uint_fast32_t sz)
 {
     USE_GF_MULC ;
 
@@ -533,9 +547,6 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t 
 {
     int_fast32_t row, col, i ;
     
-    const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
-    const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
-    
     
     /* clear output matrix */
     memset(c, 0, m * n * sizeof(gf));
@@ -609,6 +620,65 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t 
         }
     }
 }
+
+static void
+addmul1_vector_ext(gf *dst, const gf *src, gf c, uint_fast32_t sz)
+{
+    USE_GF_MULC;
+    
+    /* pointer to the exp tables for c */
+    const v16b * mul_tables = fast_gf_exp[c];
+    
+    GF_MULC0(c);
+    
+    /* compute first values until reaching SSE alignment (16 bytes) */
+    for (; ((uintptr_t)src & (16 - 1)) != 0 && sz > 0; src++, dst++, sz--)
+    {
+        GF_ADDMULC(*dst, *src);
+    }
+    
+    /* compute 8 values at a time */
+    for (; sz >= 8; src += 8, dst += 8, sz -= 8)
+    {
+        v8gf acc;
+
+        /* pointer to the next 8 columns */
+        const v8gf * data = (const v8gf*)src;
+
+        /* get the 4 low bits of each byte */
+        v8gf datal = *data & mask2;
+        /* get the 4 high bits of each byte moved to low bits */
+        v8gf datah = (*data >> 4) & mask2;
+
+        /* load current value in output matrix */
+        memcpy(&acc, dst, sizeof(acc));
+
+        /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[0], (v16b)datal) & mask1;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[1], (v16b)datal) << 8;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[2], (v16b)datah) & mask1;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[3], (v16b)datah) << 8;
+
+        /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
+        datal >>= 8;
+        datah >>= 8;
+
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[4], (v16b)datal) & mask1;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[5], (v16b)datal) << 8;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[6], (v16b)datah) & mask1;
+        acc ^= (v8gf)__builtin_shuffle(mul_tables[7], (v16b)datah) << 8;
+
+        /* update the output matrix with the accumulator */
+        memcpy(dst, &acc, sizeof(acc));
+    }
+
+    /* compute remaining values */
+    for (; sz > 0; src++, dst++, sz--)
+    {
+        GF_ADDMULC(*dst, *src);
+    }
+}
+
 #elif CODE == SSE_INTRINSICS
 int is_simd_supported()
 {
@@ -628,11 +698,6 @@ static void
 matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
     int_fast32_t row, col, i ;
-    
-    /* mask of 16 bits values set to 0xFF */
-    const __m128i mask1 = _mm_set1_epi16(0x00FF);
-    /* mask of 8 bits values set to 0xF */
-    const __m128i mask2 = _mm_set1_epi8(0x0F);
     
     
     /* clear output matrix */
@@ -726,6 +791,85 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t 
                 }
             }
         }
+    }
+}
+
+static void
+addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz)
+{
+    USE_GF_MULC;
+    
+    /* pointer to the exp tables for c */
+    const __m128i * tables = fast_gf_exp[c];
+    
+    GF_MULC0(c);
+    
+    /* compute first values until reaching SSE alignment (16 bytes) */
+    for (; ((uintptr_t)src & (16 - 1)) != 0 && sz > 0; src++, dst++, sz--)
+    {
+        GF_ADDMULC(*dst, *src);
+    }
+    
+    /* compute 8 values at a time */
+    for (; sz >= 8; src += 8, dst += 8, sz -= 8)
+    {
+        /* accumulator and working variables */
+        __m128i acc, cur;
+
+        /* load the next 8 values */
+        const __m128i data = _mm_load_si128((__m128i*)src);
+
+        /* get the 4 low bits of each byte */
+        __m128i datal = _mm_and_si128(data, mask2);
+        /* get the 4 high bits of each byte moved to low bits */
+        __m128i datah = _mm_and_si128(_mm_srli_epi16(data, 4), mask2);
+
+        /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
+        cur = _mm_shuffle_epi8(tables[0], datal);
+        acc = _mm_and_si128(cur, mask1);
+
+        cur = _mm_shuffle_epi8(tables[1], datal);
+        cur = _mm_slli_epi16(cur, 8);
+        acc = _mm_xor_si128(acc, cur);
+
+        cur = _mm_shuffle_epi8(tables[2], datah);
+        cur = _mm_and_si128(cur, mask1);
+        acc = _mm_xor_si128(acc, cur);
+
+        cur = _mm_shuffle_epi8(tables[3], datah);
+        cur = _mm_slli_epi16(cur, 8);
+        acc = _mm_xor_si128(acc, cur);
+
+        /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
+        datal = _mm_srli_epi16(datal, 8);
+        datah = _mm_srli_epi16(datah, 8);
+
+        cur = _mm_shuffle_epi8(tables[4], datal);
+        cur = _mm_and_si128(cur, mask1);
+        acc = _mm_xor_si128(acc, cur);
+
+        cur = _mm_shuffle_epi8(tables[5], datal);
+        cur = _mm_slli_epi16(cur, 8);
+        acc = _mm_xor_si128(acc, cur);
+
+        cur = _mm_shuffle_epi8(tables[6], datah);
+        cur = _mm_and_si128(cur, mask1);
+        acc = _mm_xor_si128(acc, cur);
+
+        cur = _mm_shuffle_epi8(tables[7], datah);
+        cur = _mm_slli_epi16(cur, 8);
+        acc = _mm_xor_si128(acc, cur);
+
+        /* update the output matrix with the accumulator */
+        cur = _mm_loadu_si128((__m128i*)dst);
+        cur = _mm_xor_si128(cur, acc);
+        _mm_storeu_si128((__m128i*)dst, cur);
+    }
+
+    /* compute remaining values */
+    for (; sz > 0; src++, dst++, sz--)
+    {
+        GF_ADDMULC(*dst, *src);
     }
 }
 #endif
@@ -966,7 +1110,14 @@ init_fec()
 #if CODE == SSE_INTRINSICS
     /* enable SSE code if supported by the CPU */
     if (is_simd_supported())
+    {
+        /* mask of 16 bits values set to 0xFF */
+        mask1 = _mm_set1_epi16(0x00FF);
+        /* mask of 8 bits values set to 0xF */
+        mask2 = _mm_set1_epi8(0x0F);
         matmul = matmul_sse_intrin;
+        addmul1 = addmul1_sse_intrin;
+    }
 #endif
 }
 
@@ -1124,6 +1275,7 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int32_t index, uint
         memset(fec, 0, sz*sizeof(gf));
         for (i = 0; i < k; i++)
             addmul(fec, src[i], p[i], sz);
+        check_alladdmul(fec, src, code->enc_matrix, index, k, sz);
     } else
         fprintf(stderr, "Invalid index %"PRIi32" (max %"PRIi32")\n",
             index, code->n - 1 );
@@ -1328,7 +1480,7 @@ void check_gf()
     }
 }
 
-/* check result of matmul() using reference functions */
+/* check the result of matmul() using reference functions */
 void check_matmul(const gf *a, const gf *b, const gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
     int_fast32_t row, col, i;
@@ -1342,6 +1494,21 @@ void check_matmul(const gf *a, const gf *b, const gf *c, int_fast32_t n, int_fas
                 acc ^= gf_mul_ref(a[row * k + i], b[i * m + col]);
             assert(c[row * m + col] == acc);
         }
+    }
+}
+
+/* check the result of all addmul() for encoding a block */
+void check_alladdmul(const gf* dst, const gf **src, const gf *enc, int_fast32_t index, int_fast32_t k, uint_fast32_t sz)
+{
+    uint_fast32_t i;
+    int_fast32_t j;
+    
+    for (i = 0; i < sz; i++)
+    {
+        gf acc = 0;
+        for (j = 0; j < k; j++)
+            acc ^= gf_mul_ref(src[j][i], enc[index*k + j]);
+        assert(acc == dst[i]);
     }
 }
 #endif /* SELFTEST */
