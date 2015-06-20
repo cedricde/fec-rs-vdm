@@ -8,7 +8,6 @@ env:
     - OMP_NUM_THREADS=4
     - THREADSAFE=1
     - OPENMP=1
-    - SELFTEST=1
   matrix:
     - CODE=ORIGINAL_ONLY
     - CODE=SSE_INTRINSICS
