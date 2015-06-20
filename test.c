@@ -9,6 +9,8 @@
 #include <string.h>
 #include "fec.h"
 
+#define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
+
 /*
  * compatibility stuff
  */

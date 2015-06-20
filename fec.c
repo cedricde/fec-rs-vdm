@@ -1,6 +1,7 @@
 /*
  * fec.c -- forward error correction based on Vandermonde matrices
  * 980624
+ * (C) 2015 Cédric Delmas (cedricde@outlook.fr)
  * (C) 1997-98 Luigi Rizzo (luigi@iet.unipi.it)
  *
  * Portions derived from code by Phil Karn (karn@ka9q.ampr.org),
@@ -36,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 #ifdef THREADSAFE
 #include <pthread.h>
@@ -107,7 +109,7 @@
 	  else t = t1 - t ; \
 	  if (t == 0) t = 1 ;}
 
-u_long ticks[10];	/* vars for timekeeping */
+static u_long ticks[10];	/* vars for timekeeping */
 #else
 #define DEB(x)
 #define DDB(x)
@@ -131,8 +133,10 @@ u_long ticks[10];	/* vars for timekeeping */
 #endif
 #if (GF_BITS <= 8)
 typedef uint8_t gf;
+#define PRIgf PRIu8
 #else
 typedef uint16_t gf;
+#define PRIgf PRIu16
 #endif
 
 #define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
@@ -143,7 +147,7 @@ typedef uint16_t gf;
  */
 static const struct
 {
-    int number;
+    int_fast32_t number;
     const char * string;
 } allPp[] = {                           /* GF_BITS  polynomial          */
     { 0x00000, NULL },                  /*      0    no code            */
@@ -180,35 +184,25 @@ static gf gf_log[GF_SIZE+1];	/* Poly->index form conversion table	*/
 static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
-
-static void matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m);
-
 #if CODE == SSE_INTRINSICS
-
 static __m128i fast_gf_exp[GF_SIZE+1][8];
-
-static void matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m);
-
-/* function to check for needed CPU features */
-inline static int is_simd_supported();
-
-static void (*matmul)(const gf *a, const gf *b, gf *c, int n, int k, int m) = matmul_original;
-
 #elif CODE == VECTOR_EXTENSIONS
-
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
-
 static v16b fast_gf_exp[GF_SIZE+1][8];
+#endif
 
-static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m);
-
+static void matmul_original(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+#if CODE == SSE_INTRINSICS
+static void matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
+static void (*matmul)(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m) = matmul_original;
+/* function to check for needed CPU features */
+inline static int is_simd_supported();
+#elif CODE == VECTOR_EXTENSIONS
+static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
 #define matmul(a, b, c, n, k, m) matmul_vector_ext(a, b, c, n, k, m)
-
 #else
-
 #define matmul(a, b, c, n, k, m) matmul_original(a, b, c, n, k, m)
-
 #endif
 
 
@@ -216,7 +210,7 @@ static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int
 /* Declarations of test functions */
 static gf gf_mul_ref(gf x, gf y);
 static void check_gf();
-static void check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m);
+static void check_matmul(const gf *a, const gf *b, const gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
 #else
 #define check_gf()
 #define check_matmul(...)
@@ -260,7 +254,7 @@ static gf gf_mul_table[GF_SIZE + 1][GF_SIZE + 1];
 static void
 init_mul_table()
 {
-    int i, j;
+    int_fast32_t i, j;
     for (i=0; i< GF_SIZE+1; i++)
         for (j=0; j< GF_SIZE+1; j++)
             gf_mul_table[i][j] = gf_exp[modnn((uint_fast32_t)gf_log[i] + (uint_fast32_t)gf_log[j]) ] ;
@@ -280,7 +274,7 @@ gf_mul(gf x, gf y)
 #if (CODE == SSE_INTRINSICS || CODE == VECTOR_EXTENSIONS)
 static void init_mul_table()
 {
-    int i, j, v;
+    int_fast32_t i, j, v;
     uint8_t tables[8][16];
     
     for (i = 0; i <= GF_SIZE; i++)
@@ -369,7 +363,7 @@ my_aligned_malloc(size_t sz, const char *err_string)
 static void
 generate_gf(void)
 {
-    int i;
+    int_fast32_t i;
     gf mask;
     const char *Pp =  allPp[GF_BITS].string ;
 
@@ -447,17 +441,14 @@ generate_gf(void)
 
 #define UNROLL 16 /* 1, 4, 8, 16 */
 static void
-addmul1(gf *dst1, const gf *src1, gf c, int sz)
+addmul1(gf *dst, const gf *src, gf c, uint_fast32_t sz)
 {
     USE_GF_MULC ;
-    register gf *dst = dst1;
-    register const gf *src = src1 ;
-    gf *lim = &dst[sz - UNROLL + 1] ;
 
     GF_MULC0(c) ;
 
 #if (UNROLL > 1) /* unrolling by 8/16 is quite effective on the pentium */
-    for (; dst < lim ; dst += UNROLL, src += UNROLL ) {
+    for (; sz >= UNROLL ; dst += UNROLL, src += UNROLL, sz -= UNROLL ) {
         GF_ADDMULC( dst[0] , src[0] );
         GF_ADDMULC( dst[1] , src[1] );
         GF_ADDMULC( dst[2] , src[2] );
@@ -480,8 +471,7 @@ addmul1(gf *dst1, const gf *src1, gf c, int sz)
 #endif
     }
 #endif
-    lim += UNROLL - 1 ;
-    for (; dst < lim; dst++, src++ )		/* final components */
+    for (; sz > 0; dst++, src++, sz-- )		/* final components */
         GF_ADDMULC( *dst , *src );
 }
 
@@ -489,9 +479,9 @@ addmul1(gf *dst1, const gf *src1, gf c, int sz)
  * computes C = AB where A is n*k, B is k*m, C is n*m
  */
 static void
-matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_original(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
-    int row, col, i ;
+    int_fast32_t row, col, i ;
 
 #pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++) {
@@ -511,9 +501,9 @@ matmul_original(const gf *a, const gf *b, gf *c, int n, int k, int m)
  * does the same as matmul() but A and B are assumed to store log values
  */
 static void
-matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_log(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
-    int row, col, i ;
+    int_fast32_t row, col, i ;
 
 #pragma omp parallel for private(row, col, i)
     for (row = 0; row < n ; row++)
@@ -539,9 +529,9 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
  * matmul() using vector extensions
  */
 static void
-matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
-    int row, col, i ;
+    int_fast32_t row, col, i ;
     
     const v8gf mask1 = { 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x00FF };
     const v8gf mask2 = { 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F, 0x0F0F };
@@ -622,7 +612,7 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
 #elif CODE == SSE_INTRINSICS
 int is_simd_supported()
 {
-    unsigned int a, b, c, d;
+    uint32_t a, b, c, d;
     
     __asm__("cpuid\n\t"
             : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
@@ -635,9 +625,9 @@ int is_simd_supported()
  * matmul() using SSE2 and SSSE3 intrinsics
  */
 static void 
-matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
+matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
-    int row, col, i ;
+    int_fast32_t row, col, i ;
     
     /* mask of 16 bits values set to 0xFF */
     const __m128i mask1 = _mm_set1_epi16(0x00FF);
@@ -746,9 +736,9 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
  * (only for test)
  */
 static int
-is_identity(gf *m, int k)
+is_identity(const gf *m, int_fast32_t k)
 {
-    int row, col ;
+    int_fast32_t row, col ;
     for (row=0; row<k; row++)
         for (col=0; col<k; col++)
             if ( (row==col && *m != 1) ||
@@ -768,15 +758,15 @@ is_identity(gf *m, int k)
  */
 DEB( int pivloops=0; int pivswaps=0 ; /* diagnostic */)
 static int
-invert_mat(gf *src, int k)
+invert_mat(gf *src, int_fast32_t k)
 {
     gf c, *p ;
-    int irow, icol, row, col, i, ix ;
+    int_fast32_t irow, icol, row, col, i, ix ;
 
     int error = 1 ;
-    int *indxc = my_malloc(k*sizeof(int), "indxc");
-    int *indxr = my_malloc(k*sizeof(int), "indxr");
-    int *ipiv = my_malloc(k*sizeof(int), "ipiv");
+    int32_t *indxc = my_malloc(k*sizeof(int32_t), "indxc");
+    int32_t *indxr = my_malloc(k*sizeof(int32_t), "indxr");
+    int32_t *ipiv = my_malloc(k*sizeof(int32_t), "ipiv");
     gf *id_row = NEW_GF_MATRIX(1, k);
     gf *temp_row = NEW_GF_MATRIX(1, k);
 
@@ -906,9 +896,9 @@ fail:
  */
 
 int
-invert_vdm(gf *src, int k)
+invert_vdm(gf *src, int_fast32_t k)
 {
-    int i, j, row, col ;
+    int_fast32_t i, j, row, col ;
     gf *b, *c, *p;
     gf t, xx ;
 
@@ -1007,8 +997,8 @@ int fec_init()
 #define FEC_MAGIC	0xFECC0DEC
 
 struct fec_parms {
-    u_long magic ;
-    int k, n ;		/* parameters of the code */
+    uint32_t magic ;
+    int32_t k, n ;		/* parameters of the code */
     gf *enc_matrix ;
 } ;
 
@@ -1016,7 +1006,7 @@ void
 fec_free(struct fec_parms *p)
 {
     if (p==NULL ||
-       p->magic != ( ( (FEC_MAGIC ^ p->k) ^ p->n) ^ (int)(p->enc_matrix)) ) {
+       p->magic != ( ( (FEC_MAGIC ^ p->k) ^ p->n) ^ (uint32_t)(uintptr_t)(p->enc_matrix)) ) {
         fprintf(stderr, "bad parameters to fec_free\n");
         return ;
     }
@@ -1029,9 +1019,9 @@ fec_free(struct fec_parms *p)
  * the encoding matrix.
  */
 struct fec_parms *
-fec_new(int k, int n)
+fec_new(int32_t k, int32_t n)
 {
-    int row, col ;
+    int_fast32_t row, col ;
     gf *p, *tmp_m ;
 
     struct fec_parms *retval ;
@@ -1040,7 +1030,7 @@ fec_new(int k, int n)
         return NULL;
 
     if (k > GF_SIZE + 1 || n > GF_SIZE + 1 || k > n ) {
-        fprintf(stderr, "Invalid parameters k %d n %d GF_SIZE %d\n",
+        fprintf(stderr, "Invalid parameters k %"PRIi32" n %"PRIi32" GF_SIZE %d\n",
                 k, n, GF_SIZE );
         return NULL ;
     }
@@ -1048,7 +1038,7 @@ fec_new(int k, int n)
     retval->k = k ;
     retval->n = n ;
     retval->enc_matrix = NEW_GF_MATRIX(n, k);
-    retval->magic = ( ( FEC_MAGIC ^ k) ^ n) ^ (int)(retval->enc_matrix) ;
+    retval->magic = ( ( FEC_MAGIC ^ k) ^ n) ^ (uint32_t)(uintptr_t)(retval->enc_matrix) ;
     tmp_m = NEW_GF_MATRIX(n, k);
 #if 1
     /*
@@ -1071,9 +1061,9 @@ fec_new(int k, int n)
     tmp_m[0] = 1 ;
     for (col = 1; col < k; col++)
         tmp_m[col] = 0;
-    for (p = tmp_m + k, row = 1; row < n; row++, p += k)
+    for (row = 1; row < n; row++)
         for (col = 0; col < k; col ++)
-            p[col] = gf_exp[modnn((uint_fast32_t)gf_log[row]*(uint_fast32_t)col)];
+            tmp_m[row * k + col] = gf_exp[modnn((uint_fast32_t)gf_log[row]*(uint_fast32_t)col)];
 #endif
 
     /*
@@ -1118,9 +1108,9 @@ fec_new(int k, int n)
  * with index "index".
  */
 void
-fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
+fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int32_t index, uint32_t sz)
 {
-    int i, k = code->k ;
+    int_fast32_t i, k = code->k;
     gf *p ;
 
 #if (GF_BITS > 8)
@@ -1130,12 +1120,12 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
     if (index < k)
          memcpy(fec, src[index], sz*sizeof(gf) ) ;
     else if (index < code->n) {
-        p = &(code->enc_matrix[index*k] );
+        p = &(code->enc_matrix[index*k]);
         memset(fec, 0, sz*sizeof(gf));
-        for (i = 0; i < k ; i++)
-            addmul(fec, src[i], p[i], sz ) ;
+        for (i = 0; i < k; i++)
+            addmul(fec, src[i], p[i], sz);
     } else
-        fprintf(stderr, "Invalid index %d (max %d)\n",
+        fprintf(stderr, "Invalid index %"PRIi32" (max %"PRIi32")\n",
             index, code->n - 1 );
 }
 
@@ -1143,9 +1133,9 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int index, int sz)
  * shuffle move src packets in their position
  */
 static int
-shuffle(gf *pkt[], int index[], int k)
+shuffle(gf *pkt[], int32_t index[], int_fast32_t k)
 {
-    int i;
+    int_fast32_t i;
 
     for ( i = 0 ; i < k ; ) {
         if (index[i] >= k || index[i] == i)
@@ -1157,10 +1147,10 @@ shuffle(gf *pkt[], int index[], int k)
             int c = index[i] ;
 
             if (index[c] == c) {
-                DEB(fprintf(stderr, "\nshuffle, error at %d\n", i);)
+                DEB(fprintf(stderr, "\nshuffle, error at %"PRIiFAST32"\n", i);)
                 return 1 ;
             }
-            SWAP(index[i], index[c], int) ;
+            SWAP(index[i], index[c], int32_t) ;
             SWAP(pkt[i], pkt[c], gf *) ;
         }
     }
@@ -1168,7 +1158,7 @@ shuffle(gf *pkt[], int index[], int k)
     for ( i = 0 ; i < k ; i++ ) {
         if (index[i] < k && index[i] != i) {
             fprintf(stderr, "shuffle: after\n");
-            for (i=0; i<k ; i++) fprintf(stderr, "%3d ", index[i]);
+            for (i=0; i<k ; i++) fprintf(stderr, "%3"PRIi32" ", index[i]);
             fprintf(stderr, "\n");
             return 1 ;
         }
@@ -1183,9 +1173,9 @@ shuffle(gf *pkt[], int index[], int k)
  * a vector of k*k elements, in row-major order
  */
 static gf *
-build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
+build_decode_matrix(struct fec_parms *code, int32_t index[])
 {
-    int i , k = code->k ;
+    int_fast32_t i, k = code->k;
     gf *p, *matrix = NEW_GF_MATRIX(k, k);
 
     TICK(ticks[9]);
@@ -1199,7 +1189,7 @@ build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
         if (index[i] < code->n )
             memcpy(p, &(code->enc_matrix[index[i]*k]), k*sizeof(gf)); 
         else {
-            fprintf(stderr, "decode: invalid index %d (max %d)\n",
+            fprintf(stderr, "decode: invalid index %"PRIi32" (max %"PRIi32")\n",
                 index[i], code->n - 1 );
             DELETE_GF_MATRIX(matrix) ;
             return NULL ;
@@ -1226,11 +1216,11 @@ build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
  *	sz:    size of each packet
  */
 int
-fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
+fec_decode(struct fec_parms *code, gf *pkt[], int32_t index[], uint32_t sz)
 {
     gf *m_dec ; 
     gf **new_pkt ;
-    int row, col , k = code->k ;
+    int_fast32_t row, col, k = code->k;
 
 #if (GF_BITS > 8)
     sz /= 2 ;
@@ -1238,7 +1228,7 @@ fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
 
     if (shuffle(pkt, index, k))	/* error if true */
         return 1 ;
-    m_dec = build_decode_matrix(code, pkt, index);
+    m_dec = build_decode_matrix(code, index);
 
     if (m_dec == NULL)
         return 1 ; /* error */
@@ -1275,22 +1265,22 @@ fec_decode(struct fec_parms *code, gf *pkt[], int index[], int sz)
 void
 test_gf()
 {
-    int i ;
+    int_fast32_t i;
     /*
      * test gf tables. Sufficiently tested...
      */
     for (i=0; i<= GF_SIZE; i++) {
         if (gf_exp[gf_log[i]] != i)
-            fprintf(stderr, "bad exp/log i %d log %d exp(log) %d\n",
+            fprintf(stderr, "bad exp/log i %"PRIiFAST32" log %"PRIgf" exp(log) %"PRIgf"\n",
                 i, gf_log[i], gf_exp[gf_log[i]]);
 
         if (i != 0 && gf_mul(i, inverse[i]) != 1)
-            fprintf(stderr, "bad mul/inv i %d inv %d i*inv(i) %d\n",
+            fprintf(stderr, "bad mul/inv i %"PRIiFAST32" inv %"PRIgf" i*inv(i) %"PRIgf"\n",
                 i, inverse[i], gf_mul(i, inverse[i]) );
         if (gf_mul(0,i) != 0)
-            fprintf(stderr, "bad mul table 0,%d\n",i);
+            fprintf(stderr, "bad mul table 0,%"PRIiFAST32"\n",i);
         if (gf_mul(i,0) != 0)
-            fprintf(stderr, "bad mul table %d,0\n",i);
+            fprintf(stderr, "bad mul table %"PRIiFAST32",0\n",i);
     }
 }
 #endif /* TEST */
@@ -1299,8 +1289,8 @@ test_gf()
 /* Reference implementation of multiplication in Galois Field */
 gf gf_mul_ref(gf x, gf y)
 {
-    int a = x, b = y, r = 0;
-    int i;
+    int_fast32_t a = x, b = y, r = 0;
+    uint_fast8_t i;
     
     for (i = 0; i < GF_BITS; i++)
     {
@@ -1318,7 +1308,7 @@ gf gf_mul_ref(gf x, gf y)
 /* check tables and multiplications for Galois Field computations */
 void check_gf()
 {
-    int i, j;
+    int_fast32_t i, j;
     
     for (i = 0; i <= GF_SIZE; i++)
     {
@@ -1339,9 +1329,9 @@ void check_gf()
 }
 
 /* check result of matmul() using reference functions */
-void check_matmul(const gf *a, const gf *b, const gf *c, int n, int k, int m)
+void check_matmul(const gf *a, const gf *b, const gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m)
 {
-    int row, col, i;
+    int_fast32_t row, col, i;
 
     for (row = 0; row < n; row++)
     {

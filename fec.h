@@ -1,6 +1,7 @@
 /*
  * fec.c -- forward error correction based on Vandermonde matrices
  * 980614
+ * (C) 2015 Cédric Delmas (cedricde@outlook.fr)
  * (C) 1997-98 Luigi Rizzo (luigi@iet.unipi.it)
  *
  * Portions derived from code by Phil Karn (karn@ka9q.ampr.org),
@@ -34,28 +35,25 @@
 #ifndef _FEC_H
 #define _FEC_H
 
-/*
- * The following parameter defines how many bits are used for
- * field elements. The code supports any value from 2 to 16
- * but fastest operation is achieved with 8 bit elements
- * This is the only parameter you may want to change.
- */
-#ifndef GF_BITS
-#define GF_BITS  16	/* code over GF(2**GF_BITS) - change to suit */
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
 #endif
-
-#define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
-
 
 typedef struct fec_parms * fec_t;
 
 
 extern int fec_init();
 
-extern fec_t fec_new(int k, int n);
+extern fec_t fec_new(int32_t k, int32_t n);
 extern void fec_free(fec_t code);
 
-extern void fec_encode(fec_t code, const void *src[], void *dst, int index, int sz);
-extern int fec_decode(fec_t code, void *pkt[], int index[], int sz);
+extern void fec_encode(fec_t code, const void *src[], void *dst, int32_t index, uint32_t sz);
+extern int fec_decode(fec_t code, void *pkt[], int32_t index[], uint32_t sz);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _FEC_H */
