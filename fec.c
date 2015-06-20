@@ -197,7 +197,7 @@ static void matmul_original(const gf *a, const gf *b, gf *c, int_fast32_t n, int
 static void matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
 static void (*matmul)(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m) = matmul_original;
 /* function to check for needed CPU features */
-inline static int is_simd_supported();
+static int is_simd_supported();
 #elif CODE == VECTOR_EXTENSIONS
 static void matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t k, int_fast32_t m);
 #define matmul(a, b, c, n, k, m) matmul_vector_ext(a, b, c, n, k, m)
