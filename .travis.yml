@@ -6,16 +6,18 @@ compiler:
 env:
   global:
     - OMP_NUM_THREADS=4
-    - EXTRA_CFLAGS=-fopenmp
-    - EXTRA_LDFLAGS=-fopenmp
+    - THREADSAFE=1
+    - OPENMP=1
   matrix:
-    - GF_MODE=NORMAL
-    - GF_MODE=SSE_INTRIN
-    - GF_MODE=VECTOR_EXT
+    - CODE=ORIGINAL_ONLY
+    - CODE=SSE_INTRINSICS
+    - CODE=VECTOR_EXTENSIONS
+    - THREADSAFE=0
+    - OPENMP=0
 
 matrix:
   exclude:
     - compiler: clang
-      env: GF_MODE=VECTOR_EXT
+      env: CODE=VECTOR_EXTENSIONS
 
-script: make CPPFLAGS="-DGF_BITS=16 -DENABLE_$GF_MODE" && make test
+script: make && make test

@@ -36,17 +36,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#ifdef THREADSAFE
 #include <pthread.h>
+#endif
 
 #ifdef SELFTEST
 #include <assert.h>
 #endif
 
-#if defined(ENABLE_SSE_INTRIN)
+#define ORIGINAL_ONLY     1
+#define SSE_INTRINSICS    2
+#define VECTOR_EXTENSIONS 3
+#ifndef CODE
+#define CODE ORIGINAL_ONLY
+#elif CODE != ORIGINAL_ONLY && CODE != SSE_INTRINSICS && CODE != VECTOR_EXTENSIONS
+#error "Macro CODE has an invalid value"
+#endif
+
+#if CODE == SSE_INTRINSICS
 #include <emmintrin.h>
 #include <tmmintrin.h>
 #include <mm_malloc.h>
-#elif defined(ENABLE_VECTOR_EXT)
+#elif CODE == VECTOR_EXTENSIONS
 #include <mm_malloc.h>
 #endif
 
@@ -60,22 +72,16 @@
 #define GF_BITS  16	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
-#if defined(ENABLE_SSE_INTRIN) && defined(ENABLE_VECTOR_EXT)
-#error "Cannot enable both SSE intrinsics and vector extensions code"
-#endif
-
-#if defined(ENABLE_SSE_INTRIN) && !defined(__i386__) && !defined(__x86_64__)
+#if CODE == SSE_INTRINSICS && !defined(__i386__) && !defined(__x86_64__)
 #error "SSE intrinsics are for x86 and x86_64 CPU only"
 #endif
 
-#if (GF_BITS <= 8) && (defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT))
+#if (GF_BITS <= 8) && (CODE == SSE_INTRINSICS || CODE == VECTOR_EXTENSIONS)
 #error "SIMD codes require GF_BITS > 8"
 #endif
 
-#if defined(ENABLE_VECTOR_EXT)
-#if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 7)
+#if CODE == VECTOR_EXTENSIONS && (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 7))
 #error "Vector extensions code is not supported by the compiler."
-#endif
 #endif
 
 /*
@@ -175,7 +181,7 @@ static gf inverse[GF_SIZE+1];	/* inverse of field elem.		*/
 				/* inv[\alpha**i]=\alpha**(GF_SIZE-i-1)	*/
 
 
-#if defined(ENABLE_SSE_INTRIN)
+#if CODE == SSE_INTRINSICS
 
 static __m128i fast_gf_exp[GF_SIZE+1][8];
 
@@ -186,7 +192,7 @@ inline static int is_simd_supported();
     if (is_simd_supported()) matmul_sse_intrin(a, b, c, n, k, m); \
     else matmul_original(a, b, c, n, k, m);
 
-#elif defined(ENABLE_VECTOR_EXT)
+#elif CODE == VECTOR_EXTENSIONS
 
 typedef uint16_t v8gf __attribute__((vector_size(16)));
 typedef uint8_t v16b __attribute__((vector_size(16)));
@@ -267,7 +273,7 @@ gf_mul(gf x, gf y)
     return gf_exp[(uint_fast32_t)gf_log[x] + (uint_fast32_t)gf_log[y]] ;
 }
 
-#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
+#if (CODE == SSE_INTRINSICS || CODE == VECTOR_EXTENSIONS)
 static void init_mul_table()
 {
     int i, j, v;
@@ -329,7 +335,7 @@ my_malloc(size_t sz, const char *err_string)
     return p ;
 }
 
-#if defined(ENABLE_SSE_INTRIN) || defined(ENABLE_VECTOR_EXT)
+#if (CODE == SSE_INTRINSICS || CODE == VECTOR_EXTENSIONS)
 static void *
 my_aligned_malloc(size_t sz, const char *err_string)
 {
@@ -524,7 +530,7 @@ matmul_log(const gf *a, const gf *b, gf *c, int n, int k, int m)
 }
 #endif
 
-#if defined(ENABLE_VECTOR_EXT)
+#if CODE == VECTOR_EXTENSIONS
 /*
  * matmul() using vector extensions
  */
@@ -610,7 +616,7 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#elif defined(ENABLE_SSE_INTRIN)
+#elif CODE == SSE_INTRINSICS
 int is_simd_supported()
 {
     unsigned int a, b, c, d;
@@ -730,42 +736,6 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int n, int k, int m)
         }
     }
 }
-#endif /* defined(ENABLE_SSE_INTRIN) */
-
-#if 0
-    memset(c, 0, m * n * sizeof(gf));
-    for (row = 0; row < n ; row++)
-    {
-        for (i = 0; i < k; i++)
-        {
-            for (col = 0; col < m ; col++)
-            {
-                c[row * m + col] ^= gf_mul(a[row * k + i], b[i * m + col]) ;
-            }
-        }
-    }
-#endif
-#if 0
-    memset(c, 0, m * n * sizeof(gf));
-    {
-        gf * pa = a, * pb = b, * pc = c;
-        for (row = 0; row < n ; row++)
-        {
-            pb = b;
-            for (i = 0; i < k; i++)
-            {
-                for (col = 0; col < m ; col++)
-                {
-                    *pc ^= gf_mul(*pa, *pb);
-                    pb++;
-                    pc++;
-                }
-                pa++;
-                pc -= m;
-            }
-            pc += m;
-        }
-    }
 #endif
 
 #ifdef DEBUG
@@ -1005,9 +975,20 @@ init_fec()
 
 int fec_init()
 {
+#ifdef THREADSAFE
     static pthread_once_t fec_initialized = PTHREAD_ONCE_INIT;
 
     return (pthread_once(&fec_initialized, init_fec) == 0);
+#else
+    static int fec_initialized = 0;
+
+    if (fec_initialized == 0)
+    {
+        init_fec();
+        fec_initialized = 1;
+    }
+    return 1;
+#endif
 }
 
 /*
