@@ -624,6 +624,8 @@ matmul_vector_ext(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t 
 static void
 addmul1_vector_ext(gf *dst, const gf *src, gf c, uint_fast32_t sz)
 {
+    uint_fast32_t i;
+    
     USE_GF_MULC;
     
     /* pointer to the exp tables for c */
@@ -637,43 +639,47 @@ addmul1_vector_ext(gf *dst, const gf *src, gf c, uint_fast32_t sz)
         GF_ADDMULC(*dst, *src);
     }
     
-    /* compute 8 values at a time */
-    for (; sz >= 8; src += 8, dst += 8, sz -= 8)
+    if (sz >= 8)
     {
-        v8gf acc;
+        /* compute 8 values at a time */
+#pragma omp parallel for private(i)
+        for (i = 0; i <= (sz - 8); i += 8)
+        {
+            v8gf acc;
 
-        /* pointer to the next 8 columns */
-        const v8gf * data = (const v8gf*)src;
+            /* pointer to the next 8 columns */
+            const v8gf * data = (const v8gf*)&src[i];
 
-        /* get the 4 low bits of each byte */
-        v8gf datal = *data & mask2;
-        /* get the 4 high bits of each byte moved to low bits */
-        v8gf datah = (*data >> 4) & mask2;
+            /* get the 4 low bits of each byte */
+            v8gf datal = *data & mask2;
+            /* get the 4 high bits of each byte moved to low bits */
+            v8gf datah = (*data >> 4) & mask2;
 
-        /* load current value in output matrix */
-        memcpy(&acc, dst, sizeof(acc));
+            /* load current value in output matrix */
+            memcpy(&acc, &dst[i], sizeof(acc));
 
-        /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[0], (v16b)datal) & mask1;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[1], (v16b)datal) << 8;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[2], (v16b)datah) & mask1;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[3], (v16b)datah) << 8;
+            /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[0], (v16b)datal) & mask1;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[1], (v16b)datal) << 8;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[2], (v16b)datah) & mask1;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[3], (v16b)datah) << 8;
 
-        /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
-        datal >>= 8;
-        datah >>= 8;
+            /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
+            datal >>= 8;
+            datah >>= 8;
 
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[4], (v16b)datal) & mask1;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[5], (v16b)datal) << 8;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[6], (v16b)datah) & mask1;
-        acc ^= (v8gf)__builtin_shuffle(mul_tables[7], (v16b)datah) << 8;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[4], (v16b)datal) & mask1;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[5], (v16b)datal) << 8;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[6], (v16b)datah) & mask1;
+            acc ^= (v8gf)__builtin_shuffle(mul_tables[7], (v16b)datah) << 8;
 
-        /* update the output matrix with the accumulator */
-        memcpy(dst, &acc, sizeof(acc));
+            /* update the output matrix with the accumulator */
+            memcpy(&dst[i], &acc, sizeof(acc));
+        }
     }
 
     /* compute remaining values */
-    for (; sz > 0; src++, dst++, sz--)
+    for (src += (sz / 8) * 8, dst += (sz / 8) * 8, sz %= 8; sz > 0; src++, dst++, sz--)
     {
         GF_ADDMULC(*dst, *src);
     }
@@ -797,6 +803,8 @@ matmul_sse_intrin(const gf *a, const gf *b, gf *c, int_fast32_t n, int_fast32_t 
 static void
 addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz)
 {
+    uint_fast32_t i;
+    
     USE_GF_MULC;
     
     /* pointer to the exp tables for c */
@@ -810,64 +818,68 @@ addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz)
         GF_ADDMULC(*dst, *src);
     }
     
-    /* compute 8 values at a time */
-    for (; sz >= 8; src += 8, dst += 8, sz -= 8)
+    if (sz >= 8)
     {
-        /* accumulator and working variables */
-        __m128i acc, cur;
+        /* compute 8 values at a time */
+#pragma omp parallel for private(i)
+        for (i = 0; i <= (sz - 8); i += 8)
+        {
+            /* accumulator and working variables */
+            __m128i acc, cur;
 
-        /* load the next 8 values */
-        const __m128i data = _mm_load_si128((__m128i*)src);
+            /* load the next 8 values */
+            const __m128i data = _mm_load_si128((__m128i*)&src[i]);
 
-        /* get the 4 low bits of each byte */
-        __m128i datal = _mm_and_si128(data, mask2);
-        /* get the 4 high bits of each byte moved to low bits */
-        __m128i datah = _mm_and_si128(_mm_srli_epi16(data, 4), mask2);
+            /* get the 4 low bits of each byte */
+            __m128i datal = _mm_and_si128(data, mask2);
+            /* get the 4 high bits of each byte moved to low bits */
+            __m128i datah = _mm_and_si128(_mm_srli_epi16(data, 4), mask2);
 
-        /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
-        cur = _mm_shuffle_epi8(tables[0], datal);
-        acc = _mm_and_si128(cur, mask1);
+            /* compute the product of c with the 4 low and 4 high bits of the low byte of values in src */
+            cur = _mm_shuffle_epi8(tables[0], datal);
+            acc = _mm_and_si128(cur, mask1);
 
-        cur = _mm_shuffle_epi8(tables[1], datal);
-        cur = _mm_slli_epi16(cur, 8);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[1], datal);
+            cur = _mm_slli_epi16(cur, 8);
+            acc = _mm_xor_si128(acc, cur);
 
-        cur = _mm_shuffle_epi8(tables[2], datah);
-        cur = _mm_and_si128(cur, mask1);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[2], datah);
+            cur = _mm_and_si128(cur, mask1);
+            acc = _mm_xor_si128(acc, cur);
 
-        cur = _mm_shuffle_epi8(tables[3], datah);
-        cur = _mm_slli_epi16(cur, 8);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[3], datah);
+            cur = _mm_slli_epi16(cur, 8);
+            acc = _mm_xor_si128(acc, cur);
 
-        /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
-        datal = _mm_srli_epi16(datal, 8);
-        datah = _mm_srli_epi16(datah, 8);
+            /* compute the product of c with the 4 low and 4 high bits of the high byte of values in src */
+            datal = _mm_srli_epi16(datal, 8);
+            datah = _mm_srli_epi16(datah, 8);
 
-        cur = _mm_shuffle_epi8(tables[4], datal);
-        cur = _mm_and_si128(cur, mask1);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[4], datal);
+            cur = _mm_and_si128(cur, mask1);
+            acc = _mm_xor_si128(acc, cur);
 
-        cur = _mm_shuffle_epi8(tables[5], datal);
-        cur = _mm_slli_epi16(cur, 8);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[5], datal);
+            cur = _mm_slli_epi16(cur, 8);
+            acc = _mm_xor_si128(acc, cur);
 
-        cur = _mm_shuffle_epi8(tables[6], datah);
-        cur = _mm_and_si128(cur, mask1);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[6], datah);
+            cur = _mm_and_si128(cur, mask1);
+            acc = _mm_xor_si128(acc, cur);
 
-        cur = _mm_shuffle_epi8(tables[7], datah);
-        cur = _mm_slli_epi16(cur, 8);
-        acc = _mm_xor_si128(acc, cur);
+            cur = _mm_shuffle_epi8(tables[7], datah);
+            cur = _mm_slli_epi16(cur, 8);
+            acc = _mm_xor_si128(acc, cur);
 
-        /* update the output matrix with the accumulator */
-        cur = _mm_loadu_si128((__m128i*)dst);
-        cur = _mm_xor_si128(cur, acc);
-        _mm_storeu_si128((__m128i*)dst, cur);
+            /* update the output matrix with the accumulator */
+            cur = _mm_loadu_si128((__m128i*)&dst[i]);
+            cur = _mm_xor_si128(cur, acc);
+            _mm_storeu_si128((__m128i*)&dst[i], cur);
+        }
     }
 
     /* compute remaining values */
-    for (; sz > 0; src++, dst++, sz--)
+    for (src += (sz / 8) * 8, dst += (sz / 8) * 8, sz %= 8; sz > 0; src++, dst++, sz--)
     {
         GF_ADDMULC(*dst, *src);
     }
