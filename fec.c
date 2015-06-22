@@ -821,7 +821,6 @@ addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz)
     if (sz >= 8)
     {
         /* compute 8 values at a time */
-#pragma omp parallel for private(i)
         for (i = 0; i <= (sz - 8); i += 8)
         {
             /* accumulator and working variables */
@@ -876,10 +875,14 @@ addmul1_sse_intrin(gf *dst, const gf *src, gf c, uint_fast32_t sz)
             cur = _mm_xor_si128(cur, acc);
             _mm_storeu_si128((__m128i*)&dst[i], cur);
         }
+        
+        src += (sz / 8) * 8;
+        dst += (sz / 8) * 8;
+        sz %= 8;
     }
 
     /* compute remaining values */
-    for (src += (sz / 8) * 8, dst += (sz / 8) * 8, sz %= 8; sz > 0; src++, dst++, sz--)
+    for (; sz > 0; src++, dst++, sz--)
     {
         GF_ADDMULC(*dst, *src);
     }
@@ -1285,6 +1288,27 @@ fec_encode(struct fec_parms *code, const gf *src[], gf *fec, int32_t index, uint
     else if (index < code->n) {
         p = &(code->enc_matrix[index*k]);
         memset(fec, 0, sz*sizeof(gf));
+#ifdef _OPENMP
+#define WORK_SIZE 2048
+        if (sz >= WORK_SIZE)
+        {
+            uint_fast32_t j;
+            
+#pragma omp parallel for private(i, j)
+            for (j = 0; j <= (sz - WORK_SIZE); j += WORK_SIZE)
+            {
+                for (i = 0; i < k; i++)
+                    addmul(fec + j, src[i] + j, p[i], WORK_SIZE);
+            }
+            if ((sz % WORK_SIZE) != 0)
+            {
+                for (i = 0; i < k; i++)
+                    addmul(fec + (sz / WORK_SIZE) * WORK_SIZE, src[i] + (sz / WORK_SIZE) * WORK_SIZE, p[i], sz % WORK_SIZE);
+            }
+        }
+#undef WORK_SIZE
+        else
+#endif
         for (i = 0; i < k; i++)
             addmul(fec, src[i], p[i], sz);
         check_alladdmul(fec, src, code->enc_matrix, index, k, sz);
