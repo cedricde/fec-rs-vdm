@@ -1171,8 +1171,9 @@ struct fec_parms {
 void
 fec_free(struct fec_parms *p)
 {
-    if (p==NULL ||
-       p->magic != ( ( (FEC_MAGIC ^ p->k) ^ p->n) ^ (uint32_t)(uintptr_t)(p->enc_matrix)) ) {
+    if (p == NULL)
+        return;
+    if (p->magic != ( ( (FEC_MAGIC ^ p->k) ^ p->n) ^ (uint32_t)(uintptr_t)(p->enc_matrix)) ) {
         fprintf(stderr, "bad parameters to fec_free\n");
         return ;
     }
